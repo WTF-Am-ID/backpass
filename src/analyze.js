@@ -9,7 +9,7 @@ import { getAdapter, readTranscript } from "./discovery/index.js";
 import { instructionUnits, renderInstructionIndex } from "./memory.js";
 import { renderSkillIndexForAnalysis } from "./skills.js";
 import { renderPrompt } from "./prompts.js";
-import { renderOpenGapIndex } from "./gap-ledger.js";
+import { gapSource, renderOpenGapIndex } from "./gap-ledger.js";
 import { evidenceKey, isEvidenceFresh, safeFileName } from "./state.js";
 import { emitProgress } from "./progress.js";
 import { UserError, color, info, warn } from "./logger.js";
@@ -274,6 +274,32 @@ async function analyzeOne({
     model: raw.model,
     rawPath: rawFile ?? raw.rawPath,
   });
+  if (distilled.generatedSpans.length) {
+    const ledger = config.state.readGapLedger();
+    let removed = false;
+    for (const [id, entry] of Object.entries(ledger.entries)) {
+      for (const [sessionId, observation] of Object.entries(entry.sessions)) {
+        const sourceId = observation.sourceSessionId || sessionId;
+        if (
+          sourceId !== transcriptIdentity(transcript) &&
+          !(sourceId === transcript.id && observation.source === gapSource(transcript))
+        )
+          continue;
+        const clean = sanitizeEvidence(
+          { gaps: [{ ...observation, proposedInstruction: entry.proposedInstruction }], usedRawTranscript: true },
+          null,
+          distilled.trace,
+          distilled.generatedSpans,
+        );
+        if (!clean.gaps.length) {
+          delete entry.sessions[sessionId];
+          removed = true;
+        }
+      }
+      if (!Object.keys(entry.sessions).length) delete ledger.entries[id];
+    }
+    if (removed) config.state.writeGapLedger(ledger);
+  }
 
   emitProgress("analyze:lane", {
     slot,

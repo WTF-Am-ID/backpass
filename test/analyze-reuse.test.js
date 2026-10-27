@@ -12,6 +12,7 @@ import { discoverForRun } from "../src/commands/scan.js";
 import { State } from "../src/state.js";
 import { resolveMemoryFiles } from "../src/memory.js";
 import { foldForRun } from "../src/commands/propose.js";
+import { emptyGapLedger, gapEntryId, recordGapObservations } from "../src/gap-ledger.js";
 
 /**
  * The reuse-miss incident, through the public CLI (design section on evidence keys,
@@ -201,6 +202,101 @@ test("analysis rejects a distiller marker before caching evidence", (t) => {
   const [record] = new State(dir).ensure().listEvidence();
   assert.equal(record.positive.length, 1, "the real session quote survives");
   assert.deepEqual(record.negative, [], "the generated quote never reaches the evidence cache");
+});
+
+test("upgrade revalidates persisted gap quotes before folding selected sessions", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-ledger-upgrade-home-"));
+  const dir = initRepo(MEMORY);
+  t.after(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const buriedQuote = "Buried original evidence remains valid.";
+  for (const id of ["session-a", "session-b"]) {
+    const file = writeSession(home, id, dir);
+    const content = "x".repeat(4800) + buriedQuote + "x".repeat(3200 - buriedQuote.length);
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify({ type: "message", message: { role: "assistant", content } })}\n`,
+    );
+  }
+  assert.equal(runAnalyze(dir, home).status, 0);
+  const state = new State(dir).ensure();
+  const records = state.listEvidence();
+  const fabricated = "Check generated elisions before planning.";
+  const overlapping = "Require caution when interpreting truncated session boundaries.";
+  const legitimate = "Read docs/db.md before writing queries.";
+  const rawBacked = "Validate architecture decisions using recorded tradeoffs.";
+  const ledger = emptyGapLedger();
+  recordGapObservations(
+    ledger,
+    records.map((record) => ({
+      ...record,
+      gaps: [
+        { proposedInstruction: fabricated, quote: "[... 2000 chars elided ...]" },
+        { proposedInstruction: overlapping, quote: "xxxxx [... 2000 chars elided ...] xxxxx" },
+        { proposedInstruction: legitimate, quote: "Ran make build as instructed." },
+        { proposedInstruction: rawBacked, quote: buriedQuote },
+      ],
+    })),
+  );
+  const nestedId = gapEntryId("docs/AGENTS.md", fabricated);
+  ledger.entries[nestedId] = {
+    ...structuredClone(ledger.entries[gapEntryId("AGENTS.md", fabricated)]),
+    id: nestedId,
+    memoryPath: "docs/AGENTS.md",
+  };
+  for (const entry of Object.values(ledger.entries)) {
+    const first = records[0].transcript;
+    entry.sessions["old-linked-observer"] = entry.sessions[first.identity];
+    delete entry.sessions[first.identity];
+    const second = records[1].transcript;
+    entry.sessions[second.id] = entry.sessions[second.identity];
+    delete entry.sessions[second.identity];
+    delete entry.sessions[second.id].sourceSessionId;
+  }
+  state.writeGapLedger(ledger);
+  const persisted = state.readGapLedger();
+  for (const record of records) {
+    state.writeEvidence(record.transcript, {
+      ...record,
+      key: record.key.replace(/analysis-index-v\d+$/, "analysis-index-v4"),
+    });
+  }
+
+  const upgraded = runAnalyze(dir, home);
+  assert.equal(upgraded.status, 0, upgraded.output);
+  assert.deepEqual([upgraded.summary.analyzed, upgraded.summary.cached], [2, 0]);
+  const revalidated = state.readGapLedger();
+  for (const proposal of [fabricated, overlapping]) {
+    assert.equal(revalidated.entries[gapEntryId("AGENTS.md", proposal)], undefined);
+  }
+  assert.equal(revalidated.entries[nestedId], undefined, "all memory surfaces for the source are revalidated");
+  for (const proposal of [legitimate, rawBacked]) {
+    const id = gapEntryId("AGENTS.md", proposal);
+    assert.deepEqual(revalidated.entries[id], persisted.entries[id], "valid history and timestamps survive");
+  }
+  const current = state.listEvidence();
+  const repo = resolveRepo(dir);
+  const memoryFile = resolveMemoryFiles(dir, ["AGENTS.md", "CLAUDE.md"]).primary;
+  const ctx = { repo, config: { state, minGapEvidence: 2, gapLedgerMaxAge: "90d" } };
+  const summary = await foldForRun(
+    ctx,
+    memoryFile,
+    current[0].memoryHash,
+    [],
+    current.map((r) => r.transcript),
+  );
+  assert.equal(summary.analyzedSessions, 2);
+  assert.ok(
+    !summary.gaps.some((gap) => gap.proposedInstruction === fabricated),
+    "generated quotes cannot corroborate",
+  );
+  assert.equal(summary.gaps.find((gap) => gap.proposedInstruction === legitimate)?.sessions, 2);
+  assert.equal(summary.gaps.find((gap) => gap.proposedInstruction === rawBacked)?.sessions, 2);
+  const cached = runAnalyze(dir, home);
+  assert.equal(cached.status, 0, cached.output);
+  assert.deepEqual([cached.summary.analyzed, cached.summary.cached], [0, 2]);
 });
 
 test("editing AGENTS.md without --force reanalyzes and explains that prior evidence is stale, not missing", () => {
