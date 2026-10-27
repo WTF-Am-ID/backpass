@@ -18,6 +18,10 @@ const META = {
   rawPath: "/home/u/.claude/projects/x/abc.jsonl",
 };
 
+function sourceTexts(...texts) {
+  return distill(texts.map((text) => ({ kind: "message", role: "assistant", text })), META).sources;
+}
+
 test("the distilled trace keeps turns verbatim and reduces tool calls to one line each", () => {
   const { trace, stats } = distill(
     [
@@ -140,23 +144,27 @@ test("redaction runs on tool input and output inside the trace", () => {
 });
 
 test("evidence items without a verbatim quote are discarded at parse time", () => {
-  const clean = sanitizeEvidence({
-    positive: [
-      { instruction: "AG-001", quote: "the agent posted the full URL", effect: "no follow-up" },
-      { instruction: "AG-002", effect: "claimed without a quote" },
-      { instruction: "AG-003", quote: "short" },
-    ],
-    negative: [{ instruction: "AG-004", quote: "it used a bare #2731 reference" }],
-    gaps: [
-      {
-        proposedInstruction: "Read docs/db.md before writing queries.",
-        quote: "walked migrations for 18 turns",
-        recurrenceRisk: "high",
-      },
-      { proposedInstruction: "No quote here", recurrenceRisk: "high" },
-    ],
-    usedRawTranscript: true,
-  });
+  const clean = sanitizeEvidence(
+    {
+      positive: [
+        { instruction: "AG-001", quote: "the agent posted the full URL", effect: "no follow-up" },
+        { instruction: "AG-002", effect: "claimed without a quote" },
+        { instruction: "AG-003", quote: "short" },
+      ],
+      negative: [{ instruction: "AG-004", quote: "it used a bare #2731 reference" }],
+      gaps: [
+        {
+          proposedInstruction: "Read docs/db.md before writing queries.",
+          quote: "walked migrations for 18 turns",
+          recurrenceRisk: "high",
+        },
+        { proposedInstruction: "No quote here", recurrenceRisk: "high" },
+      ],
+      usedRawTranscript: true,
+    },
+    null,
+    sourceTexts("the agent posted the full URL", "it used a bare #2731 reference", "walked migrations for 18 turns"),
+  );
 
   assert.equal(clean.positive.length, 1);
   assert.equal(clean.negative.length, 1);
@@ -182,6 +190,11 @@ test("split paragraphs accept only sentence-part attribution targets", () => {
       ],
     },
     memoryFile,
+    sourceTexts(
+      "followed the entire oversized paragraph",
+      "followed the second sentence precisely",
+      "cited an instruction that does not exist",
+    ),
   );
   assert.deepEqual(
     clean.positive.map((item) => item.instruction),
@@ -189,7 +202,7 @@ test("split paragraphs accept only sentence-part attribution targets", () => {
   );
 });
 
-test("a quote that is not in the distilled trace is a paraphrase and is discarded", () => {
+test("a quote that is not in the source events is a paraphrase and is discarded", () => {
   const trace = "turn 3\n  the agent posted the full URL\n\nturn 4\n  it used a  bare #2731\n  reference\n";
   const clean = sanitizeEvidence(
     {
@@ -201,7 +214,7 @@ test("a quote that is not in the distilled trace is a paraphrase and is discarde
       gaps: [{ proposedInstruction: "Post full URLs.", quote: "posted the full URL" }],
     },
     null,
-    trace,
+    sourceTexts(trace),
   );
   assert.deepEqual(
     clean.positive.map((item) => item.instruction),
@@ -211,7 +224,7 @@ test("a quote that is not in the distilled trace is a paraphrase and is discarde
   assert.equal(clean.gaps.length, 1);
 });
 
-test("only a literal true opts out of the trace check, and rejections are counted", () => {
+test("rejections are counted when raw access is not a literal boolean", () => {
   const clean = sanitizeEvidence(
     {
       positive: [
@@ -221,20 +234,20 @@ test("only a literal true opts out of the trace check, and rejections are counte
       usedRawTranscript: "false",
     },
     null,
-    "nothing here matches",
+    sourceTexts("nothing here matches"),
   );
   assert.equal(clean.usedRawTranscript, false);
   assert.deepEqual(clean.positive, []);
   assert.equal(clean.quotesNotInTrace, 2);
 });
 
-test("the trace check is skipped when the model read the raw transcript", () => {
+test("claiming raw transcript access cannot replace source provenance", () => {
   const clean = sanitizeEvidence(
     { positive: [{ instruction: "AG-001", quote: "text the distiller elided" }], usedRawTranscript: true },
     null,
-    "nothing here matches",
+    sourceTexts("nothing here matches"),
   );
-  assert.equal(clean.positive.length, 1);
+  assert.equal(clean.positive.length, 0);
 });
 
 test("distiller elisions cannot supply evidence, even with the raw-transcript escape hatch", () => {
@@ -250,15 +263,14 @@ test("distiller elisions cannot supply evidence, even with the raw-transcript es
         usedRawTranscript,
       },
       null,
-      distilled.trace,
-      distilled.generatedSpans,
+      distilled.sources,
     );
     assert.deepEqual([clean.positive, clean.negative, clean.gaps], [[], [], []]);
     assert.equal(clean.quotesNotInTrace, 3);
   }
 });
 
-test("trace capping preserves elision provenance in its head and tail", () => {
+test("source provenance rejects elisions in both capped trace boundaries", () => {
   const marker = "[... 2000 chars elided ...]";
   const distilled = distill(
     [{ kind: "message", role: "user", text: "h".repeat(4800) + "x".repeat(2200) + "t".repeat(1000) }],
@@ -276,8 +288,7 @@ test("trace capping preserves elision provenance in its head and tail", () => {
       })),
     },
     null,
-    distilled.trace,
-    distilled.generatedSpans,
+    distilled.sources,
   );
   assert.deepEqual(
     clean.gaps.map((gap) => gap.quote),
@@ -298,11 +309,70 @@ test("marker-shaped session text and repeated real matches remain valid evidence
   const clean = sanitizeEvidence(
     { positive: [{ instruction: "AG-001", quote: marker }] },
     null,
-    distilled.trace,
-    distilled.generatedSpans,
+    distilled.sources,
   );
   assert.equal(clean.positive.length, 1, "a later match from the session still counts");
   assert.equal(clean.quotesNotInTrace, 0);
+});
+
+test("source provenance identifies Unicode and tool-field spans without trusting model metadata", () => {
+  const events = [
+    { kind: "message", role: "user", text: "🙂 prefix\nReal  source\twords followed." },
+    {
+      kind: "tool",
+      name: "Bash",
+      input: { command: "printf inspect-database" },
+      result: { lines: ["schema was missing"] },
+    },
+  ];
+  const distilled = distill(events, META);
+  const clean = sanitizeEvidence(
+    {
+      gaps: [
+        {
+          proposedInstruction: "Preserve genuine evidence.",
+          quote: "Real source words",
+          quoteProvenance: { kind: "generated" },
+        },
+        { proposedInstruction: "Inspect the database.", quote: "inspect-database" },
+        { proposedInstruction: "Check schema availability.", quote: "schema was missing" },
+        { proposedInstruction: "Check the structured result.", quote: '"lines":["schema was missing"]' },
+        {
+          proposedInstruction: "Reject fabricated evidence.",
+          quote: "fabricated source words",
+          quoteProvenance: { kind: "source" },
+        },
+      ],
+    },
+    null,
+    distilled.sources,
+  );
+  assert.equal(clean.gaps.length, 4);
+  for (const gap of clean.gaps) {
+    const { kind, event, field, representation, start, end } = gap.quoteProvenance;
+    assert.equal(kind, "source");
+    const source = field.reduce((value, key) => value[key], events[event]);
+    const text = representation === "json" ? JSON.stringify(source) : source;
+    assert.equal(text.slice(start, end).replace(/\s+/g, " "), gap.quote);
+  }
+  assert.equal(clean.gaps[0].quoteProvenance.start, events[0].text.indexOf("Real"));
+});
+
+test("source validation rejects generated quotes in short sessions", () => {
+  const distilled = distill([{ kind: "message", role: "user", text: "Actual source text is enough." }], META);
+  assert.equal(distilled.stats.elided, false);
+  const clean = sanitizeEvidence(
+    {
+      gaps: [
+        { proposedInstruction: "Keep actual evidence.", quote: "Actual source text" },
+        { proposedInstruction: "Reject old elisions.", quote: "[... 2000 chars elided ...]" },
+      ],
+      usedRawTranscript: true,
+    },
+    null,
+    distilled.sources,
+  );
+  assert.deepEqual(clean.gaps.map((gap) => gap.quote), ["Actual source text"]);
 });
 
 test("sanitizeEvidence tolerates a malformed model response", () => {
@@ -318,9 +388,13 @@ test("a gap's coveredBySkill citation survives sanitization; junk values record 
     recurrenceRisk: "high",
     ...extra,
   });
-  const clean = sanitizeEvidence({
-    gaps: [gap({ coveredBySkill: "  db-schema  " }), gap({ coveredBySkill: "" }), gap({ coveredBySkill: 42 })],
-  });
+  const clean = sanitizeEvidence(
+    {
+      gaps: [gap({ coveredBySkill: "  db-schema  " }), gap({ coveredBySkill: "" }), gap({ coveredBySkill: 42 })],
+    },
+    null,
+    sourceTexts("dropped the column with no backfill plan"),
+  );
   assert.equal(clean.gaps.length, 3);
   assert.equal(clean.gaps[0].coveredBySkill, "db-schema");
   assert.ok(!("coveredBySkill" in clean.gaps[1]), "an empty citation is no citation");
@@ -328,15 +402,25 @@ test("a gap's coveredBySkill citation survives sanitization; junk values record 
 });
 
 test("a negative's class survives only as one of the judged values, and never invents harm", () => {
-  const clean = sanitizeEvidence({
-    negative: [
-      { instruction: "AG-001", quote: "followed the stale pin and broke the build", class: "harm" },
-      { instruction: "AG-002", quote: "skipped the failing-test-first step", class: "non-compliance" },
-      { instruction: "AG-003", quote: "an unrelated grumble about tooling", class: "irrelevant" },
-      { instruction: "AG-004", quote: "a record from before the field existed" },
-      { instruction: "AG-005", quote: "a made-up value must not pass", class: "catastrophic" },
-    ],
-  });
+  const clean = sanitizeEvidence(
+    {
+      negative: [
+        { instruction: "AG-001", quote: "followed the stale pin and broke the build", class: "harm" },
+        { instruction: "AG-002", quote: "skipped the failing-test-first step", class: "non-compliance" },
+        { instruction: "AG-003", quote: "an unrelated grumble about tooling", class: "irrelevant" },
+        { instruction: "AG-004", quote: "a record from before the field existed" },
+        { instruction: "AG-005", quote: "a made-up value must not pass", class: "catastrophic" },
+      ],
+    },
+    null,
+    sourceTexts(
+      "followed the stale pin and broke the build",
+      "skipped the failing-test-first step",
+      "an unrelated grumble about tooling",
+      "a record from before the field existed",
+      "a made-up value must not pass",
+    ),
+  );
   assert.deepEqual(
     clean.negative.map((item) => item.class),
     ["harm", "non-compliance", "irrelevant", undefined, undefined],
@@ -344,27 +428,35 @@ test("a negative's class survives only as one of the judged values, and never in
 });
 
 test("a gap's domain defaults to project, and a citation is kept only when it looks like a ledger id", () => {
-  const clean = sanitizeEvidence({
-    gaps: [
-      {
-        proposedInstruction: "Bind the attestation to the exact head SHA.",
-        quote: "published an attestation for the wrong commit",
-        domain: "project",
-        matchesGap: "d5ff4883e71499f5",
-      },
-      {
-        proposedInstruction: "Stop after the report on scout tasks.",
-        quote: "opened a PR during a scout task",
-        domain: "orchestration",
-        matchesGap: "not-a-ledger-id",
-      },
-      {
-        proposedInstruction: "A legacy gap with neither field.",
-        quote: "walked migrations for 18 turns",
-        domain: "somewhere-else",
-      },
-    ],
-  });
+  const clean = sanitizeEvidence(
+    {
+      gaps: [
+        {
+          proposedInstruction: "Bind the attestation to the exact head SHA.",
+          quote: "published an attestation for the wrong commit",
+          domain: "project",
+          matchesGap: "d5ff4883e71499f5",
+        },
+        {
+          proposedInstruction: "Stop after the report on scout tasks.",
+          quote: "opened a PR during a scout task",
+          domain: "orchestration",
+          matchesGap: "not-a-ledger-id",
+        },
+        {
+          proposedInstruction: "A legacy gap with neither field.",
+          quote: "walked migrations for 18 turns",
+          domain: "somewhere-else",
+        },
+      ],
+    },
+    null,
+    sourceTexts(
+      "published an attestation for the wrong commit",
+      "opened a PR during a scout task",
+      "walked migrations for 18 turns",
+    ),
+  );
   assert.deepEqual(
     clean.gaps.map((gap) => [gap.domain, gap.matchesGap]),
     [

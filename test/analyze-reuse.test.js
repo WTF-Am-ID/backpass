@@ -13,6 +13,8 @@ import { State } from "../src/state.js";
 import { resolveMemoryFiles } from "../src/memory.js";
 import { foldForRun } from "../src/commands/propose.js";
 import { emptyGapLedger, gapEntryId, recordGapObservations } from "../src/gap-ledger.js";
+import { readTranscript } from "../src/discovery/index.js";
+import { distill } from "../src/distill.js";
 
 /**
  * The reuse-miss incident, through the public CLI (design section on evidence keys,
@@ -52,10 +54,16 @@ if (argv.includes("config") && argv.includes("show")) {
 if (argv.includes("--file")) {
   const prompt = require("node:fs").readFileSync(argv[argv.indexOf("--file") + 1], "utf8");
   const marker = prompt.match(/\\[\\.\\.\\. \\d+ chars elided \\.\\.\\.\\]/)?.[0];
+  const growth = prompt.includes("session-growth");
   process.stdout.write(JSON.stringify({
     positive: [{ instruction: "AG-001", moment: "start", effect: "followed it", quote: "Ran make build as instructed." }],
     negative: marker ? [{ instruction: "AG-001", quote: marker, class: "harm" }] : [],
-    gaps: [{ mistake: "skipped lint", proposedInstruction: "Always run lint before pushing.", recurrenceRisk: "high", quote: "Now run the tests too." }],
+    gaps: [{ mistake: "skipped lint", proposedInstruction: "Always run lint before pushing.", recurrenceRisk: "high", quote: "Now run the tests too." },
+      ...(growth ? [
+        { proposedInstruction: "Check generated elisions before planning.", quote: "[... 2000 chars elided ...]", quoteProvenance: { kind: "source", event: 0, field: ["text"], start: 0, end: 26 } },
+        { proposedInstruction: "Validate architecture decisions using recorded tradeoffs.", quote: "The genuine database contract was overlooked." },
+      ] : [])],
+    usedRawTranscript: growth,
   }) + "\\n");
   process.exit(0);
 }
@@ -269,12 +277,22 @@ test("upgrade revalidates persisted gap quotes before folding selected sessions"
   assert.deepEqual([upgraded.summary.analyzed, upgraded.summary.cached], [2, 0]);
   const revalidated = state.readGapLedger();
   for (const proposal of [fabricated, overlapping]) {
-    assert.equal(revalidated.entries[gapEntryId("AGENTS.md", proposal)], undefined);
+    const entry = revalidated.entries[gapEntryId("AGENTS.md", proposal)];
+    assert.ok(Object.values(entry.sessions).every((observation) => observation.quoteProvenance.kind === "unverified"));
   }
-  assert.equal(revalidated.entries[nestedId], undefined, "all memory surfaces for the source are revalidated");
+  assert.ok(
+    Object.values(revalidated.entries[nestedId].sessions).every(
+      (observation) => observation.quoteProvenance.kind === "unverified",
+    ),
+    "all memory surfaces for the source are revalidated",
+  );
   for (const proposal of [legitimate, rawBacked]) {
     const id = gapEntryId("AGENTS.md", proposal);
-    assert.deepEqual(revalidated.entries[id], persisted.entries[id], "valid history and timestamps survive");
+    for (const [session, observation] of Object.entries(revalidated.entries[id].sessions)) {
+      const { quoteProvenance, ...history } = observation;
+      assert.equal(quoteProvenance.kind, "source");
+      assert.deepEqual(history, persisted.entries[id].sessions[session], "valid history and timestamps survive");
+    }
   }
   const current = state.listEvidence();
   const repo = resolveRepo(dir);
@@ -294,6 +312,109 @@ test("upgrade revalidates persisted gap quotes before folding selected sessions"
   );
   assert.equal(summary.gaps.find((gap) => gap.proposedInstruction === legitimate)?.sessions, 2);
   assert.equal(summary.gaps.find((gap) => gap.proposedInstruction === rawBacked)?.sessions, 2);
+  const cached = runAnalyze(dir, home);
+  assert.equal(cached.status, 0, cached.output);
+  assert.deepEqual([cached.summary.analyzed, cached.summary.cached], [0, 2]);
+});
+
+test("source provenance rejects new and persisted generated quotes after session growth", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-growth-home-"));
+  const dir = initRepo(MEMORY);
+  t.after(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const hidden = "The genuine database contract was overlooked.";
+  const files = [];
+  const appendTurn = (file, text) =>
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify({ type: "message", message: { role: "assistant", content: text } })}\n`,
+    );
+  for (const id of ["session-growth-a", "session-growth-b"]) {
+    const file = writeSession(home, id, dir);
+    files.push(file);
+    for (let i = 0; i < 7; i += 1) appendTurn(file, "p".repeat(3000));
+    appendTurn(file, "x".repeat(4800) + hidden + "x".repeat(3200 - hidden.length));
+  }
+  const first = runAnalyze(dir, home);
+  assert.equal(first.status, 0, first.output);
+  const state = new State(dir).ensure();
+  const records = state.listEvidence();
+  const fabricated = "Check generated elisions before planning.";
+  const legitimate = "Read docs/db.md before writing queries.";
+  const ledger = emptyGapLedger();
+  recordGapObservations(
+    ledger,
+    records.map((record) => ({
+      ...record,
+      gaps: [
+        { proposedInstruction: fabricated, quote: "[... 2000 chars elided ...]" },
+        { proposedInstruction: legitimate, quote: hidden },
+      ],
+    })),
+  );
+  state.writeGapLedger(ledger);
+  for (const file of files) {
+    for (let i = 0; i < 10; i += 1) appendTurn(file, "t".repeat(3000));
+  }
+
+  const grown = runAnalyze(dir, home);
+  assert.equal(grown.status, 0, grown.output);
+  assert.deepEqual([grown.summary.analyzed, grown.summary.cached], [2, 0]);
+  const current = state.listEvidence();
+  for (const record of current) {
+    const raw = await readTranscript(record.transcript);
+    const distilled = distill(raw.events, record.transcript);
+    assert.equal(distilled.stats.elided, true);
+    assert.ok(!distilled.trace.includes("[... 2000 chars elided ...]"), "growth hides the old message marker");
+  }
+  assert.ok(
+    current.every((record) => !record.gaps.some((gap) => gap.proposedInstruction === fabricated)),
+    "new generated quotes are rejected even when the model claims raw access",
+  );
+  assert.ok(
+    current.every((record) => record.gaps.some((gap) => gap.quote === hidden && gap.quoteProvenance.kind === "source")),
+    "new genuine quotes hidden from the trace carry measured provenance",
+  );
+  const repo = resolveRepo(dir);
+  const memoryFile = resolveMemoryFiles(dir, ["AGENTS.md", "CLAUDE.md"]).primary;
+  const ctx = { repo, config: { state, minGapEvidence: 2, gapLedgerMaxAge: "90d" } };
+  const summary = await foldForRun(
+    ctx,
+    memoryFile,
+    current[0].memoryHash,
+    [],
+    current.map((r) => r.transcript),
+  );
+  assert.ok(
+    !summary.gaps.some((gap) => gap.proposedInstruction === fabricated),
+    "persisted generated quotes do not corroborate",
+  );
+  assert.equal(summary.gaps.find((gap) => gap.proposedInstruction === legitimate)?.sessions, 2);
+  assert.equal(
+    summary.gaps.find((gap) => gap.proposedInstruction === "Validate architecture decisions using recorded tradeoffs.")?.sessions,
+    2,
+  );
+  const persisted = state.readGapLedger();
+  assert.equal(persisted.version, 1);
+  assert.equal(
+    Object.keys(persisted.entries[gapEntryId("AGENTS.md", fabricated)].sessions).length,
+    2,
+    "unverified legacy records are preserved",
+  );
+  for (const observation of Object.values(persisted.entries[gapEntryId("AGENTS.md", legitimate)].sessions)) {
+    assert.equal(observation.quoteProvenance.kind, "source");
+    const record = current.find((candidate) => candidate.transcript.identity === observation.sourceSessionId);
+    const raw = await readTranscript(record.transcript);
+    const { event, field, start, end } = observation.quoteProvenance;
+    const text = field.reduce((value, key) => value[key], raw.events[event]);
+    assert.equal(text.slice(start, end), hidden, "stored offsets identify a genuine source span");
+    assert.equal(
+      observation.firstObservedAt,
+      ledger.entries[gapEntryId("AGENTS.md", legitimate)].sessions[observation.sourceSessionId].firstObservedAt,
+    );
+  }
   const cached = runAnalyze(dir, home);
   assert.equal(cached.status, 0, cached.output);
   assert.deepEqual([cached.summary.analyzed, cached.summary.cached], [0, 2]);
