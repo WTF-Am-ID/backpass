@@ -31,6 +31,7 @@ test("Codex child replay cannot be read as an independent task", () => {
 });
 
 function setup(t) {
+  const now = Date.parse("2026-10-27T12:00:00Z");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-codex-ancestry-"));
   const previous = process.env.CODEX_HOME;
   process.env.CODEX_HOME = root;
@@ -39,7 +40,7 @@ function setup(t) {
     else process.env.CODEX_HOME = previous;
     fs.rmSync(root, { recursive: true, force: true });
   });
-  const dir = path.join(root, "sessions", "2026", "10", "27");
+  const dir = path.join(root, "sessions", ...new Date(now).toISOString().slice(0, 10).split("-"));
   fs.mkdirSync(dir, { recursive: true });
   const write = (id, metadata = {}, text = "Fix the parser.") => {
     const file = path.join(dir, `rollout-${id}.jsonl`);
@@ -52,6 +53,7 @@ function setup(t) {
         .map((entry) => JSON.stringify(entry))
         .join("\n") + "\n",
     );
+    fs.utimesSync(file, new Date(now), new Date(now));
     return file;
   };
   const parent = write("parent");
@@ -62,7 +64,7 @@ function setup(t) {
   write("self", {}, `${SELF_SESSION_SENTINEL}\nAnalyze memory.`);
   write("self-child", { parent_thread_id: "self" }, "Review just this delegated slice.");
   write("self-grandchild", { parent_thread_id: "self-child" }, "Inspect one function.");
-  return { root, parent, write };
+  return { root, parent, write, now };
 }
 
 test("Codex discovery excludes delegated evidence locally, remotely, and from a warm legacy cache", async (t) => {
@@ -101,11 +103,11 @@ test("Codex discovery excludes delegated evidence locally, remotely, and from a 
 });
 
 test("Codex child exclusion survives a missing or out-of-window self ancestor", async (t) => {
-  const { write } = setup(t);
+  const { write, now } = setup(t);
   const old = write("old-self", {}, `${SELF_SESSION_SENTINEL}\nAnalyze memory.`);
-  fs.utimesSync(old, new Date(0), new Date(0));
+  fs.utimesSync(old, new Date(now - 120_000), new Date(now - 120_000));
   write("recent-child", { parent_thread_id: "old-self" });
-  const result = await discoverProbe({ harnesses: ["codex"], cutoffMs: Date.now() - 60_000 });
+  const result = await discoverProbe({ harnesses: ["codex"], cutoffMs: now - 60_000 });
   assert.deepEqual(
     result.transcripts.map((row) => row.id),
     ["parent"],
