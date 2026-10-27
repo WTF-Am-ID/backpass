@@ -27,10 +27,14 @@ function oneLine(text, limit) {
 
 function clampMessage(text) {
   const trimmed = String(text ?? "").trim();
-  if (trimmed.length <= MESSAGE_CHARS) return trimmed;
+  if (trimmed.length <= MESSAGE_CHARS) return { text: trimmed, generatedSpans: [] };
   const head = trimmed.slice(0, MESSAGE_CHARS - 1200);
   const tail = trimmed.slice(-1000);
-  return `${head}\n\n[... ${trimmed.length - MESSAGE_CHARS} chars elided ...]\n\n${tail}`;
+  const marker = `\n\n[... ${trimmed.length - MESSAGE_CHARS} chars elided ...]\n\n`;
+  return {
+    text: `${head}${marker}${tail}`,
+    generatedSpans: [{ start: head.length, end: head.length + marker.length }],
+  };
 }
 
 function describeToolInput(input) {
@@ -100,6 +104,13 @@ export function isBoilerplate(text) {
 export function distill(events, meta, options = {}) {
   const maxTraceTokens = options.maxTraceTokens ?? 12000;
   const lines = [];
+  const generatedSpans = [];
+  let bodyLength = 0;
+  const append = (text, spans = []) => {
+    for (const { start, end } of spans) generatedSpans.push({ start: bodyLength + start, end: bodyLength + end });
+    lines.push(text);
+    bodyLength += text.length + 1;
+  };
   let userTurns = 0;
   let assistantTurns = 0;
   let toolCalls = 0;
@@ -108,21 +119,21 @@ export function distill(events, meta, options = {}) {
   for (const event of events) {
     if (!event) continue;
     if (event.kind === "message") {
-      const text = clampMessage(redact(event.text));
+      const { text, generatedSpans: spans } = clampMessage(redact(event.text));
       if (!text || isBoilerplate(text)) continue;
       turn += 1;
       if (event.role === "user") userTurns += 1;
       else assistantTurns += 1;
-      lines.push(`### turn ${turn} · ${event.role}`);
-      lines.push(text);
-      lines.push("");
+      append(`### turn ${turn} · ${event.role}`);
+      append(text, spans);
+      append("");
     } else if (event.kind === "tool") {
       toolCalls += 1;
       const input = redact(describeToolInput(event.input));
       const result = redact(describeToolResult(event.result));
       const status = event.status && event.status !== "completed" ? ` [${event.status}]` : "";
       const arrow = result ? ` -> ${result}` : "";
-      lines.push(`tool: ${event.name || "unknown"}${input ? ` ${JSON.stringify(input)}` : ""}${status}${arrow}`);
+      append(`tool: ${event.name || "unknown"}${input ? ` ${JSON.stringify(input)}` : ""}${status}${arrow}`);
     }
   }
 
@@ -147,11 +158,20 @@ export function distill(events, meta, options = {}) {
     "transcript only if a specific claim needs the full text.",
   ].join("\n");
 
-  const { body, elided } = capTrace(lines.join("\n").trim(), maxTraceTokens);
+  const {
+    body,
+    elided,
+    generatedSpans: cappedSpans,
+  } = capTrace(lines.join("\n").trim(), maxTraceTokens, generatedSpans);
   const trace = `${header}\n${body}\n${footer}\n`;
 
   return {
     trace,
+    // Half-open UTF-16 offsets, matching String.slice/indexOf, into the final trace.
+    generatedSpans: cappedSpans.map(({ start, end }) => ({
+      start: header.length + 1 + start,
+      end: header.length + 1 + end,
+    })),
     stats: {
       userTurns,
       assistantTurns,
@@ -167,16 +187,31 @@ export function distill(events, meta, options = {}) {
  * (the task as stated) and the tail (how it actually ended) and elide the middle - the
  * raw transcript path in the footer remains the escape hatch for anything in between.
  */
-function capTrace(body, maxTraceTokens) {
-  if (estimateTokens(body) <= maxTraceTokens) return { body, elided: false };
+function capTrace(body, maxTraceTokens, generatedSpans) {
+  if (estimateTokens(body) <= maxTraceTokens) return { body, elided: false, generatedSpans };
   const budgetChars = maxTraceTokens * 4;
   const headChars = Math.floor(budgetChars * 0.45);
   const tailChars = Math.floor(budgetChars * 0.45);
   const head = body.slice(0, headChars);
   const tail = body.slice(-tailChars);
   const droppedTokens = estimateTokens(body) - estimateTokens(head) - estimateTokens(tail);
+  const marker = `\n\n[... middle of session elided: ~${droppedTokens} tokens. Open the raw transcript below if a claim needs it ...]\n\n`;
+  const tailStart = body.length - tail.length;
+  const tailOffset = head.length + marker.length;
+  const retainedSpans = (start, end, offset) =>
+    generatedSpans
+      .filter((span) => span.start < end && span.end > start)
+      .map((span) => ({
+        start: Math.max(span.start, start) - start + offset,
+        end: Math.min(span.end, end) - start + offset,
+      }));
   return {
-    body: `${head}\n\n[... middle of session elided: ~${droppedTokens} tokens. Open the raw transcript below if a claim needs it ...]\n\n${tail}`,
+    body: `${head}${marker}${tail}`,
     elided: true,
+    generatedSpans: [
+      ...retainedSpans(0, head.length, 0),
+      { start: head.length, end: head.length + marker.length },
+      ...retainedSpans(tailStart, body.length, tailOffset),
+    ],
   };
 }

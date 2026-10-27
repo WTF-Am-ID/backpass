@@ -384,9 +384,11 @@ coining a paraphrase of it.
 items are discarded - the single most important defence against a model confabulating
 influence - and so are quotes that do not actually appear in the distilled trace they claim
 to come from, compared whitespace-folded so the trace's line wrapping never rejects a real
-quote. A paraphrase is a claim without evidence. The check is skipped only when the analysis
-reports `usedRawTranscript`, because then the quote may legitimately come from text the
-distiller truncated or elided. When a run discards quotes this way it says so on stderr:
+quote. A paraphrase is a claim without evidence. Quotes must have a match outside the
+distiller's generated elision spans, whose positions are tracked through trace capping.
+When the analysis reports `usedRawTranscript`, absent quotes are allowed because they may
+come from text the distiller truncated or elided, but generated matches are still rejected.
+When a run discards quotes this way it says so on stderr:
 a model that paraphrases instead of copying produces fewer findings, not cleaner ones.
 Negative evidence is weighted highest, but its class determines what it supports:
 non-compliance supports reinforcement, while only harm supports removal.

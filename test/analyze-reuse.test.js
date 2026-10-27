@@ -49,9 +49,11 @@ if (argv.includes("config") && argv.includes("show")) {
   process.exit(0);
 }
 if (argv.includes("--file")) {
+  const prompt = require("node:fs").readFileSync(argv[argv.indexOf("--file") + 1], "utf8");
+  const marker = prompt.match(/\\[\\.\\.\\. \\d+ chars elided \\.\\.\\.\\]/)?.[0];
   process.stdout.write(JSON.stringify({
     positive: [{ instruction: "AG-001", moment: "start", effect: "followed it", quote: "Ran make build as instructed." }],
-    negative: [],
+    negative: marker ? [{ instruction: "AG-001", quote: marker, class: "harm" }] : [],
     gaps: [{ mistake: "skipped lint", proposedInstruction: "Always run lint before pushing.", recurrenceRisk: "high", quote: "Now run the tests too." }],
   }) + "\\n");
   process.exit(0);
@@ -177,6 +179,28 @@ test("evidence from the previous analysis index is reanalyzed once without --for
   const reused = runAnalyze(dir, home);
   assert.equal(reused.status, 0, reused.output);
   assert.deepEqual([reused.summary.analyzed, reused.summary.cached], [0, 1]);
+});
+
+test("analysis rejects a distiller marker before caching evidence", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-elision-home-"));
+  const dir = initRepo(MEMORY);
+  t.after(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const file = writeSession(home, "session-elision", dir);
+  fs.appendFileSync(
+    file,
+    `${JSON.stringify({ type: "message", message: { role: "assistant", content: "x".repeat(8000) } })}\n`,
+  );
+
+  const analyzed = runAnalyze(dir, home);
+  assert.equal(analyzed.status, 0, analyzed.output);
+  assert.equal(analyzed.summary.analyzed, 1);
+  assert.equal(analyzed.summary.quotesNotInTrace, 1);
+  const [record] = new State(dir).ensure().listEvidence();
+  assert.equal(record.positive.length, 1, "the real session quote survives");
+  assert.deepEqual(record.negative, [], "the generated quote never reaches the evidence cache");
 });
 
 test("editing AGENTS.md without --force reanalyzes and explains that prior evidence is stale, not missing", () => {

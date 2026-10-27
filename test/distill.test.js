@@ -237,6 +237,74 @@ test("the trace check is skipped when the model read the raw transcript", () => 
   assert.equal(clean.positive.length, 1);
 });
 
+test("distiller elisions cannot supply evidence, even with the raw-transcript escape hatch", () => {
+  const distilled = distill([{ kind: "message", role: "user", text: "é🙂".repeat(3000) }], META);
+  const marker = "[... 3000 chars elided ...]";
+  assert.ok(distilled.trace.includes(marker));
+  for (const usedRawTranscript of [false, true]) {
+    const clean = sanitizeEvidence(
+      {
+        positive: [{ instruction: "AG-001", quote: marker }],
+        negative: [{ instruction: "AG-001", quote: `é🙂 ${marker}`, class: "harm" }],
+        gaps: [{ proposedInstruction: "Checkpoint long sessions.", quote: "chars elided" }],
+        usedRawTranscript,
+      },
+      null,
+      distilled.trace,
+      distilled.generatedSpans,
+    );
+    assert.deepEqual([clean.positive, clean.negative, clean.gaps], [[], [], []]);
+    assert.equal(clean.quotesNotInTrace, 3);
+  }
+});
+
+test("trace capping preserves elision provenance in its head and tail", () => {
+  const marker = "[... 2000 chars elided ...]";
+  const distilled = distill(
+    [{ kind: "message", role: "user", text: "h".repeat(4800) + "x".repeat(2200) + "t".repeat(1000) }],
+    META,
+    { maxTraceTokens: 700 },
+  );
+  assert.equal(distilled.stats.elided, true);
+  const middle = distilled.trace.match(/\[\.\.\. middle of session elided:[^\]]+\]/)[0];
+  assert.ok(distilled.trace.includes(marker), "the message marker survives in the capped tail");
+  const clean = sanitizeEvidence(
+    {
+      gaps: [marker, middle, `hhh ${middle}`, `${middle} ttt`, "hhhhhhhh", "tttttttt"].map((quote) => ({
+        proposedInstruction: "Keep real evidence.",
+        quote,
+      })),
+    },
+    null,
+    distilled.trace,
+    distilled.generatedSpans,
+  );
+  assert.deepEqual(
+    clean.gaps.map((gap) => gap.quote),
+    ["hhhhhhhh", "tttttttt"],
+  );
+  assert.equal(clean.quotesNotInTrace, 4);
+});
+
+test("marker-shaped session text and repeated real matches remain valid evidence", () => {
+  const marker = "[... 2000 chars elided ...]";
+  const distilled = distill(
+    [
+      { kind: "message", role: "user", text: "x".repeat(8000) },
+      { kind: "message", role: "assistant", text: `The literal example was ${marker}.` },
+    ],
+    META,
+  );
+  const clean = sanitizeEvidence(
+    { positive: [{ instruction: "AG-001", quote: marker }] },
+    null,
+    distilled.trace,
+    distilled.generatedSpans,
+  );
+  assert.equal(clean.positive.length, 1, "a later match from the session still counts");
+  assert.equal(clean.quotesNotInTrace, 0);
+});
+
 test("sanitizeEvidence tolerates a malformed model response", () => {
   const clean = sanitizeEvidence(null);
   assert.deepEqual(clean, { positive: [], negative: [], gaps: [], usedRawTranscript: false, quotesNotInTrace: 0 });

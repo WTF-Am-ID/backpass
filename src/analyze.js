@@ -142,14 +142,15 @@ function foldSpace(text) {
  * also appear in that trace (whitespace folded). A quote that is long enough but not in
  * the trace is a paraphrase, and a paraphrase is a claim without evidence. When the model
  * reports `usedRawTranscript`, the quote may come from text the distiller truncated or
- * elided, so the substring check is skipped rather than punishing the honest path. Only
+ * elided, so absent quotes are allowed rather than punishing the honest path. Matches
+ * must still have an occurrence outside the distiller's generated elision spans. Only
  * the literal boolean opts out: a model that answers `"false"` must still anchor its
  * quotes, or a stringly-typed reply would disable the check it is meant to fail.
  *
  * `quotesNotInTrace` counts what the trace check rejected, so a run whose analysis model
  * paraphrases everything reads as that rather than as a clean repo.
  */
-export function sanitizeEvidence(parsed, memoryFile = null, trace = null) {
+export function sanitizeEvidence(parsed, memoryFile = null, trace = null, generatedSpans = []) {
   const clean = {
     positive: [],
     negative: [],
@@ -160,10 +161,21 @@ export function sanitizeEvidence(parsed, memoryFile = null, trace = null) {
   if (!parsed || typeof parsed !== "object") return clean;
 
   const validInstructions = memoryFile ? new Set(instructionUnits(memoryFile).map((unit) => unit.id)) : null;
-  const foldedTrace = typeof trace === "string" && !clean.usedRawTranscript ? foldSpace(trace) : null;
+  const foldedTrace = typeof trace === "string" ? foldSpace(trace) : null;
+  const sessionText = [];
+  if (foldedTrace !== null) {
+    let start = 0;
+    for (const span of generatedSpans) {
+      sessionText.push(foldSpace(trace.slice(start, span.start)));
+      start = span.end;
+    }
+    sessionText.push(foldSpace(trace.slice(start)));
+  }
   const hasQuote = (item) => {
     if (typeof item?.quote !== "string" || item.quote.trim().length < 8) return false;
-    if (foldedTrace === null || foldedTrace.includes(foldSpace(item.quote))) return true;
+    const quote = foldSpace(item.quote);
+    if (foldedTrace === null || sessionText.some((text) => text.includes(quote))) return true;
+    if (clean.usedRawTranscript && !foldedTrace.includes(quote)) return true;
     clean.quotesNotInTrace += 1;
     return false;
   };
@@ -338,7 +350,7 @@ async function analyzeOne({
 
     return {
       status: "ok",
-      evidence: sanitizeEvidence(parsed, memoryFile, distilled.trace),
+      evidence: sanitizeEvidence(parsed, memoryFile, distilled.trace, distilled.generatedSpans),
       usage: usageRecord(ranWith, result),
       distilled,
     };
