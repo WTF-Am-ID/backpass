@@ -37,6 +37,7 @@ const CLI = path.join(ROOT, "bin", "backpass.js");
 const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-reuse-bin-"));
 const fakePi = path.join(binDir, "pi");
 const fakeAcpx = path.join(binDir, "acpx");
+const renderedToolQuote = String.raw`echo \"before\" echo PASSWORD=[redacted]`;
 
 fs.writeFileSync(fakePi, `#!${process.execPath}\nprocess.exit(0);\n`);
 fs.chmodSync(fakePi, 0o755);
@@ -57,6 +58,7 @@ if (argv.includes("--file")) {
   const marker = prompt.match(/\\[\\.\\.\\. \\d+ chars elided \\.\\.\\.\\]/)?.[0];
   const growth = prompt.includes("session-growth");
   const redaction = prompt.includes("session-redaction");
+  const renderedTool = prompt.includes("session-rendered-tool");
   process.stdout.write(JSON.stringify({
     positive: [{ instruction: "AG-001", moment: "start", effect: "followed it", quote: "Ran make build as instructed." }],
     negative: marker ? [{ instruction: "AG-001", quote: marker, class: "harm" }] : [],
@@ -67,6 +69,9 @@ if (argv.includes("--file")) {
       ] : []),
       ...(redaction ? [
         { proposedInstruction: "Document configuration failures using sanitized command output.", quote: "The command printed PASSWORD=[redacted]" },
+      ] : []),
+      ...(renderedTool ? [
+        { proposedInstruction: "Keep rendered command evidence.", quote: ${JSON.stringify(renderedToolQuote)} },
       ] : [])],
     usedRawTranscript: growth,
   }) + "\\n");
@@ -415,6 +420,75 @@ test("redacted quotes retain fresh and legacy corroboration through growth and m
   }
   for (const record of [persisted, current, summary, first.output, grown.output]) {
     assert.ok(!JSON.stringify(record).includes(secret), "stored and reported evidence excludes the original secret");
+  }
+});
+
+test("rendered tool quotes retain fresh and legacy ledger corroboration", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-tool-home-"));
+  const dir = initRepo(MEMORY);
+  t.after(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const secret = "synthetic-" + "tool-password";
+  for (const id of ["session-rendered-tool-a", "session-rendered-tool-b"]) {
+    const file = writeSession(home, id, dir);
+    const toolCall = {
+      type: "toolCall",
+      id: "bash",
+      name: "Bash",
+      arguments: { command: `echo "before"\necho PASSWORD=${secret}` },
+    };
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify({ type: "message", message: { role: "assistant", content: [toolCall] } })}\n`,
+    );
+  }
+  const first = runAnalyze(dir, home);
+  assert.equal(first.status, 0, first.output);
+  const state = new State(dir).ensure();
+  const records = state.listEvidence();
+  for (const record of records) {
+    const gap = record.gaps.find((item) => item.proposedInstruction === "Keep rendered command evidence.");
+    assert.ok(gap, "fresh rendered quotes are admitted");
+    assert.equal(gap.quote, renderedToolQuote);
+  }
+  const legacy = "Preserve legacy command evidence.";
+  const ledger = emptyGapLedger();
+  recordGapObservations(
+    ledger,
+    records.map((record) => ({ ...record, gaps: [{ proposedInstruction: legacy, quote: renderedToolQuote }] })),
+  );
+  state.writeGapLedger(ledger);
+  const before = state.readGapLedger();
+  const rerun = runAnalyze(dir, home, ["--force"]);
+  assert.equal(rerun.status, 0, rerun.output);
+  const persisted = state.readGapLedger();
+  const id = gapEntryId("AGENTS.md", legacy);
+  for (const [session, observation] of Object.entries(persisted.entries[id].sessions)) {
+    const { quoteProvenance, ...history } = observation;
+    assert.equal(quoteProvenance.kind, "source");
+    assert.deepEqual(history, before.entries[id].sessions[session]);
+    const record = state.listEvidence().find((item) => item.transcript.identity === session);
+    const raw = await readTranscript(record.transcript);
+    const { event, field, start, end } = quoteProvenance;
+    const source = field.reduce((value, key) => value[key], raw.events[event]);
+    assert.equal(
+      JSON.stringify(redact(source.slice(start, end).replace(/\s+/g, " "))).slice(1, -1),
+      renderedToolQuote,
+    );
+  }
+  const memoryFile = resolveMemoryFiles(dir, ["AGENTS.md", "CLAUDE.md"]).primary;
+  const summary = await foldForRun(
+    { repo: resolveRepo(dir), config: { state, minGapEvidence: 2, gapLedgerMaxAge: "90d" } },
+    memoryFile,
+    records[0].memoryHash,
+    [],
+    records.map((record) => record.transcript),
+  );
+  assert.equal(summary.gaps.find((gap) => gap.proposedInstruction === legacy)?.sessions, 2);
+  for (const record of [persisted, state.listEvidence(), summary, first.output, rerun.output]) {
+    assert.ok(!JSON.stringify(record).includes(secret));
   }
 });
 

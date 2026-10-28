@@ -19,10 +19,24 @@ const TOOL_OUTPUT_CHARS = 200;
 const MESSAGE_CHARS = 6000;
 
 function oneLine(text, limit) {
-  const flat = String(text ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return flat.length > limit ? `${flat.slice(0, limit)}...` : flat;
+  const original = String(text ?? "");
+  const trimmed = original.trim();
+  const offset = original.length - original.trimStart().length;
+  const replacements = [];
+  let delta = 0;
+  const flat = trimmed.replace(/\s+/g, (match, sourceStart) => {
+    const start = sourceStart + delta;
+    if (start < limit)
+      replacements.push({ start, end: start + 1, sourceStart, sourceEnd: sourceStart + match.length });
+    delta += 1 - match.length;
+    return " ";
+  });
+  return {
+    text: flat.length > limit ? `${flat.slice(0, limit)}...` : flat,
+    redactions: [replacements],
+    offset,
+    sourceEnd: offset + sourceOffset(Math.min(flat.length, limit), replacements, true),
+  };
 }
 
 function clampMessage(text) {
@@ -34,27 +48,48 @@ function clampMessage(text) {
 }
 
 function describeToolInput(input) {
-  if (input === null || input === undefined) return "";
-  if (typeof input === "string") return oneLine(input, TOOL_INPUT_CHARS);
+  if (input === null || input === undefined) return null;
+  if (typeof input === "string") return { text: input, field: ["input"] };
   // Prefer the field a human would recognise for the common tools.
   for (const key of ["command", "cmd", "file_path", "path", "pattern", "query", "url", "description"]) {
     if (typeof input[key] === "string" && input[key].trim()) {
-      return oneLine(input[key], TOOL_INPUT_CHARS);
+      return { text: input[key], field: ["input", key] };
     }
   }
   try {
-    return oneLine(JSON.stringify(input), TOOL_INPUT_CHARS);
+    return { text: JSON.stringify(input), field: ["input"], representation: "json" };
   } catch {
-    return "";
+    return null;
   }
 }
 
-function describeToolResult(result) {
-  if (result === null || result === undefined) return "";
-  const text = typeof result === "string" ? result : safeStringify(result);
-  const bytes = Buffer.byteLength(text, "utf8");
-  const summary = oneLine(text, TOOL_OUTPUT_CHARS);
-  return bytes > TOOL_OUTPUT_CHARS ? `${summary} (output ${formatBytes(bytes)}, truncated)` : summary;
+function renderToolSource(event, descriptor, limit, quoted = false) {
+  if (!descriptor) return { summary: "", source: null };
+  const flat = oneLine(descriptor.text, limit);
+  const redacted = redactWithOffsets(flat.text);
+  const escapes = [];
+  let delta = 0;
+  const escaped = quoted
+    ? redacted.text.replace(/["\\\u0000-\u001f\ud800-\udfff]/gu, (match, sourceStart) => {
+        const replacement = JSON.stringify(match).slice(1, -1);
+        const start = sourceStart + delta;
+        escapes.push({ start, end: start + replacement.length, sourceStart, sourceEnd: sourceStart + match.length });
+        delta += replacement.length - match.length;
+        return replacement;
+      })
+    : redacted.text;
+  return {
+    summary: quoted && redacted.text ? JSON.stringify(redacted.text) : redacted.text,
+    source: {
+      event,
+      field: descriptor.field,
+      ...(descriptor.representation ? { representation: descriptor.representation } : {}),
+      text: escaped,
+      redactions: [...flat.redactions, ...redacted.redactions, ...(quoted ? [escapes] : [])],
+      offset: flat.offset,
+      sourceEnd: flat.sourceEnd,
+    },
+  };
 }
 
 function safeStringify(value) {
@@ -110,6 +145,9 @@ export function findQuoteProvenance(quote, sources) {
         start = sourceOffset(start, replacements, false);
         end = sourceOffset(end, replacements, true);
       }
+      start += source.offset ?? 0;
+      end += source.offset ?? 0;
+      if (end > (source.sourceEnd ?? Infinity)) continue;
       return {
         kind: "source",
         event: source.event,
@@ -170,11 +208,28 @@ export function distill(events, meta, options = {}) {
       lines.push("");
     } else if (event.kind === "tool") {
       toolCalls += 1;
-      const input = redact(describeToolInput(event.input));
-      const result = redact(describeToolResult(event.result));
+      const input = renderToolSource(eventIndex, describeToolInput(event.input), TOOL_INPUT_CHARS, true);
+      const resultText =
+        event.result == null ? null : typeof event.result === "string" ? event.result : safeStringify(event.result);
+      const result = renderToolSource(
+        eventIndex,
+        resultText === null
+          ? null
+          : {
+              text: resultText,
+              field: ["result"],
+              ...(typeof event.result === "string" ? {} : { representation: "json" }),
+            },
+        TOOL_OUTPUT_CHARS,
+      );
+      if (input.source) sources.push(input.source);
+      if (result.source) sources.push(result.source);
+      const bytes = resultText === null ? 0 : Buffer.byteLength(resultText, "utf8");
+      const output =
+        bytes > TOOL_OUTPUT_CHARS ? `${result.summary} (output ${formatBytes(bytes)}, truncated)` : result.summary;
       const status = event.status && event.status !== "completed" ? ` [${event.status}]` : "";
-      const arrow = result ? ` -> ${result}` : "";
-      lines.push(`tool: ${event.name || "unknown"}${input ? ` ${JSON.stringify(input)}` : ""}${status}${arrow}`);
+      const arrow = output ? ` -> ${output}` : "";
+      lines.push(`tool: ${event.name || "unknown"}${input.summary ? ` ${input.summary}` : ""}${status}${arrow}`);
     }
   }
 

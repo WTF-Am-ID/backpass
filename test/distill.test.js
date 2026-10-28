@@ -413,6 +413,85 @@ test("redacted evidence maps to genuine source offsets without retaining secrets
   assert.ok(!JSON.stringify(jsonDistilled).includes(token), "serialized source provenance excludes the token");
 });
 
+test("rendered tool quotes map flattened and escaped text to genuine source offsets", () => {
+  const secret = "synthetic-" + "tool-password";
+  const command = `  echo "before"\necho PASSWORD=${secret}\t🙂  `;
+  const inputs = [
+    command,
+    ...["command", "cmd", "file_path", "path", "pattern", "query", "url", "description"].map((key) => ({
+      [key]: command,
+    })),
+    { other: command },
+  ];
+  for (const input of inputs) {
+    const event = { kind: "tool", name: "Bash", input };
+    const distilled = distill([event], META);
+    const quote = distilled.trace.split("tool: Bash ")[1].split("\n")[0].slice(1, -1);
+    const clean = sanitizeEvidence(
+      {
+        positive: [{ instruction: "AG-001", quote }],
+        negative: [{ instruction: "AG-001", quote, class: "harm" }],
+        gaps: [{ proposedInstruction: "Keep rendered command evidence.", quote }],
+        usedRawTranscript: true,
+      },
+      null,
+      distilled.sources,
+    );
+    assert.deepEqual([clean.positive.length, clean.negative.length, clean.gaps.length], [1, 1, 1]);
+    for (const item of [...clean.positive, ...clean.negative, ...clean.gaps]) {
+      const { event: index, field, representation, start, end } = item.quoteProvenance;
+      assert.equal(index, 0);
+      const original = field.reduce((value, key) => value[key], event);
+      const source = representation === "json" ? JSON.stringify(original) : original;
+      assert.equal(JSON.stringify(redact(source.slice(start, end).replace(/\s+/g, " "))).slice(1, -1), quote);
+    }
+    assert.ok(!JSON.stringify([distilled, clean]).includes(secret));
+  }
+  for (const result of [command, { other: command }]) {
+    const event = { kind: "tool", name: "Bash", result };
+    const distilled = distill([event], META);
+    const quote = distilled.trace.split(" -> ")[1].split("\n")[0];
+    const clean = sanitizeEvidence(
+      { gaps: [{ proposedInstruction: "Keep rendered output evidence.", quote }] },
+      null,
+      distilled.sources,
+    );
+    assert.equal(clean.gaps.length, 1);
+    const { field, representation, start, end } = clean.gaps[0].quoteProvenance;
+    const original = field.reduce((value, key) => value[key], event);
+    const source = representation === "json" ? JSON.stringify(original) : original;
+    assert.equal(redact(source.slice(start, end).replace(/\s+/g, " ")), quote);
+    assert.ok(!JSON.stringify([distilled, clean]).includes(secret));
+  }
+});
+
+test("rendered tool provenance excludes generated truncation and overlapping quotes", () => {
+  for (const field of ["input", "result"]) {
+    const event = { kind: "tool", name: "Bash", [field]: `echo "before"\n${"x".repeat(300)}` };
+    const distilled = distill([event], META);
+    const quote =
+      field === "input"
+        ? distilled.trace.split("tool: Bash ")[1].split("\n")[0].slice(1, -1)
+        : distilled.trace.split(" -> ")[1].split("\n")[0];
+    const prefix = quote.split("...")[0];
+    const clean = sanitizeEvidence(
+      {
+        gaps: [
+          { proposedInstruction: "Keep genuine prefixes.", quote: prefix },
+          { proposedInstruction: "Reject truncation.", quote },
+          { proposedInstruction: "Reject overlaps.", quote: quote.slice(prefix.length - 8) },
+          { proposedInstruction: "Reject elisions.", quote: "[... 2000 chars elided ...]" },
+        ],
+        usedRawTranscript: true,
+      },
+      null,
+      distilled.sources,
+    );
+    assert.deepEqual(clean.gaps.map((gap) => gap.quote), [prefix]);
+    assert.equal(clean.quotesNotInTrace, 3);
+  }
+});
+
 test("raw-access evidence is redacted before quotes and descriptions are persisted", () => {
   const secret = "synthetic-" + "raw-password";
   const assignment = `PASSWORD=${secret}`;
