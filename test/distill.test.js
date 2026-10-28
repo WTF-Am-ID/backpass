@@ -124,6 +124,27 @@ test("redaction leaves benign token-count arguments alone", () => {
   assert.equal(redact("token=abcdefgh1234,next=1"), "token=[redacted],next=1");
 });
 
+test("standalone apikey credentials are redacted case-insensitively with a 16-character floor", () => {
+  const lower = `apikey_${"a".repeat(64)}`;
+  const upper = `APIKEY_${"B".repeat(64)}`;
+  const mixed = "ApiKey_aB3_-aB3_-aB3_-x";
+  const label = "[redacted:API_KEY]";
+  for (const token of [lower, upper, mixed, `apikey_${"c".repeat(16)}`]) {
+    assert.equal(redact(token), label);
+    assert.equal(redact(`(${token}), next.`), `(${label}), next.`);
+  }
+  assert.equal(redact(`before\n${lower}\n${upper}\nafter`), `before\n${label}\n${label}\nafter`);
+  for (const text of [
+    "apikey",
+    "apikey_documentation",
+    `apikey_${"a".repeat(15)}`,
+    `APIKEY_${"B".repeat(15)}`,
+    `not${lower}`,
+  ]) {
+    assert.equal(redact(text), text);
+  }
+});
+
 test("redaction runs on tool input and output inside the trace", () => {
   const { trace } = distill(
     [
