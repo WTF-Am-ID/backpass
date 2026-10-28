@@ -797,6 +797,47 @@ test("a write failure leaves the proposal unstamped and retryable", () => {
   assert.equal(JSON.parse(fs.readFileSync(proposalFile, "utf8")).appliedBy, "apply");
 });
 
+test("an unwritable state directory rolls back accepted edits before retry", () => {
+  for (const json of [false, true]) {
+    for (const rejectOne of [false, true]) {
+      const dir = initRepo();
+      const proposal = proposeExtractions(dir);
+      const stateDir = path.join(dir, ".backpass");
+      const proposalFile = path.join(stateDir, "proposal.json");
+      const before = fs.readFileSync(proposalFile);
+      const vector = proposal.edits
+        .map((edit, i) => `${edit.id}=${rejectOne && i ? "rejected" : "accepted"}`)
+        .join(" ");
+      fs.chmodSync(stateDir, 0o555);
+      let failed;
+      try {
+        failed = runDecided(dir, vector, json ? ["--json"] : []);
+      } finally {
+        fs.chmodSync(stateDir, 0o755);
+      }
+
+      assert.equal(failed.status, 1, failed.output);
+      assert.match(failed.output, /EACCES|EPERM/);
+      if (json) {
+        const { results } = JSON.parse(failed.stdout);
+        assert.deepEqual(results.written, []);
+        assert.deepEqual(results.skills, []);
+      }
+      assert.deepEqual(fs.readFileSync(proposalFile), before);
+      assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), MEMORY_TEXT);
+      assert.equal(fs.existsSync(path.join(dir, ".agents")), false);
+      assert.equal(fs.existsSync(path.join(dir, ".claude")), false);
+      assert.deepEqual(rejectionsOf(dir), {});
+
+      const retry = runDecided(dir, vector, json ? ["--json"] : []);
+      assert.equal(retry.status, 0, retry.output);
+      assert.equal(JSON.parse(fs.readFileSync(proposalFile, "utf8")).appliedBy, "apply");
+      assert.notEqual(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), MEMORY_TEXT);
+      assert.equal(fs.existsSync(path.join(dir, ".agents/skills/ci-details/SKILL.md")), true);
+    }
+  }
+});
+
 test("--decisions writes accepted edits and remembers a rejection with its reason", () => {
   const dir = initRepo();
   const [accepted, rejected] = proposeExtractions(dir).edits;

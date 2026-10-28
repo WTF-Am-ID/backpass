@@ -151,13 +151,8 @@ export async function cmdApply(ctx) {
     config,
     dryRun: Boolean(ctx.flags["dry-run"]),
     rejectReasons,
+    appliedBy: "apply",
   });
-
-  if (!ctx.flags["dry-run"] && results.accepted > 0 && !results.failed.length) {
-    proposal.appliedAt = new Date().toISOString();
-    proposal.appliedBy = "apply";
-    config.state.writeProposal(proposal);
-  }
 
   if (surfaceFile) await closeApplySurface(surfaceFile);
 
