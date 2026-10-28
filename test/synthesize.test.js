@@ -31,7 +31,7 @@ if (argv.includes("sessions")) {
   if (argv.includes("new")) process.stdout.write("fake-session-id\\n");
   process.exit(0);
 }
-if (argv.includes("set")) process.exit(0);
+if (argv.includes("set") || argv.includes("set-mode")) process.exit(0);
 const fileAt = argv.indexOf("--file");
 if (fileAt < 0) process.exit(2);
 const prompt = fs.readFileSync(argv[fileAt + 1], "utf8");
@@ -85,6 +85,7 @@ const { foldEvidence } = await import("../src/fold.js");
 const { ProposalViolation } = await import("../src/proposal.js");
 const { State } = await import("../src/state.js");
 const { AcpxError } = await import("../src/acpx.js");
+const { AgentResolver } = await import("../src/agents.js");
 const { UserError, setLoggerSink } = await import("../src/logger.js");
 const { workspacePathFor } = await import("../src/workspace.js");
 const { makeRepo } = await import("./helpers/staging.js");
@@ -220,25 +221,22 @@ test("failed synthesis reports the failed prompt's UTF-8 bytes without its conte
     const privateText = `SYNTH_PRIVATE_${"密🙂".repeat(repeats)}`;
     const { config, run, calls } = setup(
       { fail: phase, edit: {}, annotations: [] },
-      { text: `# Memory\n\n- ${privateText}\n` },
-    );
-    let originalError;
-    config.agents = {
-      ...agents,
-      withFallthrough: async (_role, fn) => {
-        try {
-          return await fn(pick);
-        } catch (err) {
-          originalError = err;
-          throw err;
-        }
+      {
+        text: `# Memory\n\n- ${privateText}\n`,
+        overrides: { synthesis: { agent: "codex", model: null } },
       },
-    };
+    );
+    config.agents = new AgentResolver(config);
     await assert.rejects(run, (err) => {
-      assert.ok(err instanceof AcpxError);
-      if (phase === "edit") assert.equal(err, originalError);
-      assert.equal(err.code, 1);
-      assert.equal(err.stderr, "synthetic adapter failure");
+      if (phase === "edit") {
+        assert.ok(err instanceof UserError);
+        assert.match(err.message, /pinned synthesis agent codex/);
+        assert.match(err.hint, /check the codex\/acpx failure above and retry/);
+      } else {
+        assert.ok(err instanceof AcpxError);
+        assert.equal(err.code, 1);
+        assert.equal(err.stderr, "synthetic adapter failure");
+      }
       assert.equal(err.cause, undefined);
       assert.match(err.message, /synthetic adapter failure/);
       const invocation = calls()
@@ -591,7 +589,11 @@ test("a skill target in a relative external directory is staged and uses its act
 });
 
 test("an agent that changes nothing yields an empty proposal, never an invented edit", async () => {
-  const { run } = setup({ edit: {}, annotations: [{ reply: { edits: [], notes: ["the evidence is too thin"] } }] });
+  const { config, run } = setup(
+    { edit: {}, annotations: [{ reply: { edits: [], notes: ["the evidence is too thin"] } }] },
+    { overrides: { synthesis: { agent: "codex", model: null } } },
+  );
+  config.agents = new AgentResolver(config);
   const { proposal, violations } = await run();
   assert.deepEqual(violations, []);
   assert.equal(proposal.edits.length, 0);
