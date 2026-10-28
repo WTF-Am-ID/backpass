@@ -357,6 +357,80 @@ test("source provenance identifies Unicode and tool-field spans without trusting
   assert.equal(clean.gaps[0].quoteProvenance.start, events[0].text.indexOf("Real"));
 });
 
+test("redacted evidence maps to genuine source offsets without retaining secrets", () => {
+  const secret = "synthetic-" + "password-value";
+  const token = "ghp_" + "a".repeat(32);
+  const prefix = `🙂 ${token}\nPASSWORD=${secret}\n`;
+  const quote = "The command printed PASSWORD=[redacted]";
+  const text = `${prefix}The command printed PASSWORD=${secret}\nGenuine words after redactions.`;
+  const events = [
+    { kind: "message", role: "assistant", text },
+    { kind: "tool", input: { command: text } },
+    { kind: "tool", result: { output: text } },
+  ];
+  for (const event of events) {
+    const distilled = distill([event], META);
+    const clean = sanitizeEvidence(
+      {
+        positive: [{ instruction: "AG-001", quote }],
+        negative: [{ instruction: "AG-001", quote, class: "harm" }],
+        gaps: [
+          { proposedInstruction: "Protect credentials.", quote },
+          { proposedInstruction: "Keep trailing evidence.", quote: "Genuine words after redactions." },
+          { proposedInstruction: "Reject generated evidence.", quote: "[... 2000 chars elided ...]" },
+          { proposedInstruction: "Reject boundary overlap.", quote: `${quote} [... 2000 chars elided ...]` },
+        ],
+      },
+      null,
+      distilled.sources,
+    );
+    assert.deepEqual([clean.positive.length, clean.negative.length, clean.gaps.length], [1, 1, 2]);
+    for (const item of [...clean.positive, ...clean.negative, ...clean.gaps]) {
+      const { field, representation, start, end } = item.quoteProvenance;
+      const source = field.reduce((value, key) => value[key], event);
+      const original = representation === "json" ? JSON.stringify(source) : source;
+      assert.equal(redact(original.slice(start, end)), item.quote);
+      if (item.quote === quote) assert.equal(start, original.indexOf("The command"));
+    }
+    assert.equal(clean.quotesNotInTrace, 2);
+    for (const record of [distilled, clean]) {
+      assert.ok(!JSON.stringify(record).includes(secret), "returned records exclude the synthetic password");
+      assert.ok(!JSON.stringify(record).includes(token), "returned records exclude the synthetic token");
+    }
+  }
+  const jsonEvent = { kind: "tool", result: { token } };
+  const jsonQuote = '"token":"[redacted:GITHUB_TOKEN]"';
+  const jsonDistilled = distill([jsonEvent], META);
+  const jsonClean = sanitizeEvidence(
+    { gaps: [{ proposedInstruction: "Protect structured output.", quote: jsonQuote }] },
+    null,
+    jsonDistilled.sources,
+  );
+  assert.equal(jsonClean.gaps.length, 1);
+  const { representation, start, end } = jsonClean.gaps[0].quoteProvenance;
+  assert.equal(representation, "json");
+  assert.equal(redact(JSON.stringify(jsonEvent.result).slice(start, end)), jsonQuote);
+  assert.ok(!JSON.stringify(jsonDistilled).includes(token), "serialized source provenance excludes the token");
+});
+
+test("raw-access evidence is redacted before quotes and descriptions are persisted", () => {
+  const secret = "synthetic-" + "raw-password";
+  const assignment = `PASSWORD=${secret}`;
+  const clean = sanitizeEvidence(
+    {
+      usedRawTranscript: true,
+      positive: [{ instruction: "AG-001", quote: assignment, moment: assignment, effect: assignment }],
+      negative: [{ instruction: "AG-001", quote: assignment, moment: assignment, effect: assignment, class: "harm" }],
+      gaps: [{ proposedInstruction: assignment, quote: assignment, mistake: assignment, coveredBySkill: assignment }],
+    },
+    null,
+    sourceTexts(assignment),
+  );
+  assert.deepEqual([clean.positive.length, clean.negative.length, clean.gaps.length], [1, 1, 1]);
+  assert.ok(!JSON.stringify(clean).includes(secret), "evidence descriptions and provenance exclude the secret");
+  assert.equal(clean.gaps[0].quote, "PASSWORD=[redacted]");
+});
+
 test("source validation rejects generated quotes in short sessions", () => {
   const distilled = distill([{ kind: "message", role: "user", text: "Actual source text is enough." }], META);
   assert.equal(distilled.stats.elided, false);

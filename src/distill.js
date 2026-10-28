@@ -1,4 +1,4 @@
-import { redact } from "./redact.js";
+import { redact, redactWithOffsets } from "./redact.js";
 import { estimateTokens } from "./tokens.js";
 
 /**
@@ -102,17 +102,35 @@ export function findQuoteProvenance(quote, sources) {
   for (const source of sources) {
     const match = matcher.exec(source.text);
     if (match) {
+      let start = match.index;
+      let end = start + match[0].length;
+      // Each pass maps its redacted offsets to the preceding representation. Undo
+      // the passes in reverse order to reach the genuine event's UTF-16 offsets.
+      for (const replacements of [...source.redactions].reverse()) {
+        start = sourceOffset(start, replacements, false);
+        end = sourceOffset(end, replacements, true);
+      }
       return {
         kind: "source",
         event: source.event,
         field: source.field,
         ...(source.representation ? { representation: source.representation } : {}),
-        start: match.index,
-        end: match.index + match[0].length,
+        start,
+        end,
       };
     }
   }
   return null;
+}
+
+function sourceOffset(offset, replacements, end) {
+  let delta = 0;
+  for (const replacement of replacements) {
+    if (offset <= replacement.start) break;
+    if (offset < replacement.end) return end ? replacement.sourceEnd : replacement.sourceStart;
+    delta = replacement.sourceEnd - replacement.end;
+  }
+  return offset + delta;
 }
 
 /**
@@ -126,9 +144,10 @@ export function distill(events, meta, options = {}) {
   const lines = [];
   const sources = [];
   const collectSource = (event, field, value) => {
-    if (typeof value === "string") sources.push({ event, field, text: value });
+    if (typeof value === "string") sources.push({ event, field, ...redactWithOffsets(value) });
     else if (value && typeof value === "object") {
-      if (field.length === 1) sources.push({ event, field, text: JSON.stringify(value), representation: "json" });
+      if (field.length === 1)
+        sources.push({ event, field, ...redactWithOffsets(JSON.stringify(value)), representation: "json" });
       for (const [key, child] of Object.entries(value)) collectSource(event, [...field, key], child);
     }
   };

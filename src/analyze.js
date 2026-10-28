@@ -14,6 +14,7 @@ import { evidenceKey, isEvidenceFresh, safeFileName } from "./state.js";
 import { emitProgress } from "./progress.js";
 import { UserError, color, info, warn } from "./logger.js";
 import { corroborationIdentityOf, transcriptIdentity } from "./transcript.js";
+import { redact } from "./redact.js";
 
 /**
  * Stage 1 of the pipeline (design section 3): one cheap model call per transcript,
@@ -148,11 +149,12 @@ export function sanitizeEvidence(parsed, memoryFile = null, sources = []) {
   const validInstructions = memoryFile ? new Set(instructionUnits(memoryFile).map((unit) => unit.id)) : null;
   const sourceQuote = (item) => {
     if (typeof item?.quote !== "string" || item.quote.trim().length < 8) return null;
-    if (!findQuoteProvenance(item.quote, sources)) {
+    const redacted = redact(item.quote);
+    if (!findQuoteProvenance(redacted, sources)) {
       clean.quotesNotInTrace += 1;
       return null;
     }
-    const quote = item.quote.trim().slice(0, 600);
+    const quote = redacted.trim().slice(0, 600);
     const quoteProvenance = findQuoteProvenance(quote, sources);
     return quoteProvenance ? { quote, quoteProvenance } : null;
   };
@@ -161,13 +163,13 @@ export function sanitizeEvidence(parsed, memoryFile = null, sources = []) {
     for (const item of Array.isArray(parsed[key]) ? parsed[key] : []) {
       const quoted = sourceQuote(item);
       if (!quoted || typeof item.instruction !== "string") continue;
-      const instruction = item.instruction.trim();
+      const instruction = redact(item.instruction).trim();
       if (validInstructions && !validInstructions.has(instruction)) continue;
       /** @type {ReturnType<typeof sourceQuote> & { instruction: string, moment: string, effect: string, class?: string }} */
       const entry = {
         instruction,
-        moment: String(item.moment ?? "").slice(0, 80),
-        effect: String(item.effect ?? "").slice(0, 400),
+        moment: redact(String(item.moment ?? "")).slice(0, 80),
+        effect: redact(String(item.effect ?? "")).slice(0, 400),
         ...quoted,
       };
       // The class is what keeps "the agent skipped the rule" from being read as "the
@@ -186,8 +188,8 @@ export function sanitizeEvidence(parsed, memoryFile = null, sources = []) {
      * matchesGap?: string, coveredBySkill?: string
      * }} */
     const gap = {
-      mistake: String(item.mistake ?? "").slice(0, 400),
-      proposedInstruction: item.proposedInstruction.trim().slice(0, 400),
+      mistake: redact(String(item.mistake ?? "")).slice(0, 400),
+      proposedInstruction: redact(item.proposedInstruction).trim().slice(0, 400),
       recurrenceRisk: ["high", "medium", "low"].includes(item.recurrenceRisk) ? item.recurrenceRisk : "medium",
       ...quoted,
       domain: item.domain === "orchestration" ? "orchestration" : "project",
@@ -200,7 +202,7 @@ export function sanitizeEvidence(parsed, memoryFile = null, sources = []) {
     // failed triggers per skill; an absent or empty value simply means "no skill covers
     // this" and records nothing.
     if (typeof item.coveredBySkill === "string" && item.coveredBySkill.trim()) {
-      gap.coveredBySkill = item.coveredBySkill.trim().slice(0, 120);
+      gap.coveredBySkill = redact(item.coveredBySkill).trim().slice(0, 120);
     }
     clean.gaps.push(gap);
   }
@@ -269,6 +271,11 @@ async function analyzeOne({
           !(sourceId === transcript.id && observation.source === gapSource(transcript))
         )
           continue;
+        const quote = redact(observation.quote);
+        if (quote !== observation.quote) {
+          observation.quote = quote;
+          updated = true;
+        }
         if (observation.quoteProvenance?.kind === "source") continue;
         observation.quoteProvenance = findQuoteProvenance(observation.quote, distilled.sources) || {
           kind: "unverified",
