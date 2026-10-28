@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { primaryMemoryFile } from "../src/commands/analyze.js";
 import { applyDecisions } from "../src/apply/writer.js";
@@ -85,6 +87,35 @@ test("isPointerTo accepts the @AGENTS.md import forms and nothing else", () => {
   assert.equal(isPointerTo("", "AGENTS.md"), false);
 });
 
+test("pointer imports allow leading Markdown headings, blanks and HTML comments", () => {
+  for (const text of [
+    "# my-repo\n\n@AGENTS.md\n",
+    "<!-- title -->\n\n# my-repo\n<!-- multi\nline -->\n\n@./AGENTS.md\n<!-- end -->\n",
+    "# Title\n## Subtitle\n### Context\n#### More\n##### Detail\n###### Last\n@AGENTS.md\n",
+    "#\n\n@AGENTS.md\n",
+    "# my-repo\r\n\r\n@AGENTS.md\r\n",
+  ]) {
+    assert.equal(isPointerTo(text, "AGENTS.md"), true, text);
+  }
+});
+
+test("headings do not hide prose, multiple imports or other instruction content", () => {
+  for (const text of [
+    "# my-repo\nReal prose.\n@AGENTS.md\n",
+    "# my-repo\n@AGENTS.md\nReal prose.\n",
+    "# my-repo\n@AGENTS.md\n@AGENTS.md\n",
+    "# my-repo\n@AGENTS.md\n@OTHER.md\n",
+    "# my-repo\n@AGENTS.md\n- Follow this rule.\n",
+    "# my-repo\n```\n@AGENTS.md\n```\n",
+    "#not-a-heading\n@AGENTS.md\n",
+    "####### not-a-heading\n@AGENTS.md\n",
+    "@AGENTS.md\n# trailing heading\n",
+    "# heading without an import\n",
+  ]) {
+    assert.equal(isPointerTo(text, "AGENTS.md"), false, text);
+  }
+});
+
 test("a relative pointer resolves from the importing file's directory", () => {
   const repo = repoWith({
     ".agents/AGENTS.md": AGENTS,
@@ -121,7 +152,8 @@ test("only CLAUDE.md can cover a secondary memory file by import", () => {
 });
 
 test("CLAUDE.md as a pointer resolves AGENTS.md silently and only AGENTS.md is written", () => {
-  const repo = repoWith({ "AGENTS.md": AGENTS, "CLAUDE.md": renderPointer("AGENTS.md") });
+  const pointer = `# my-repo\n\n${renderPointer("AGENTS.md")}`;
+  const repo = repoWith({ "AGENTS.md": AGENTS, "CLAUDE.md": pointer });
   const config = loadConfig(repo.root);
 
   const { result, warnings } = captureWarnings(() => primaryMemoryFile(repo, config));
@@ -136,7 +168,33 @@ test("CLAUDE.md as a pointer resolves AGENTS.md silently and only AGENTS.md is w
     ["AGENTS.md"],
   );
   assert.match(fs.readFileSync(path.join(repo.root, "AGENTS.md"), "utf8"), /full test suite/);
-  assert.equal(fs.readFileSync(path.join(repo.root, "CLAUDE.md"), "utf8"), renderPointer("AGENTS.md"));
+  assert.equal(fs.readFileSync(path.join(repo.root, "CLAUDE.md"), "utf8"), pointer);
+});
+
+test("CLI recognizes a headed pointer without the separate-memory warning", () => {
+  const pointer = "# my-repo\n\n<!-- canonical memory -->\n@AGENTS.md\n";
+  const repo = repoWith({
+    "AGENTS.md": AGENTS,
+    "CLAUDE.md": pointer,
+    ".backpassrc.json": JSON.stringify({ discovery: { harnesses: [] } }),
+  });
+  execFileSync("git", ["init", "-q"], { cwd: repo.root });
+  const cli = fileURLToPath(new URL("../bin/backpass.js", import.meta.url));
+  for (const command of ["status", "analyze"]) {
+    const result = spawnSync(process.execPath, [cli, command], {
+      cwd: repo.root,
+      encoding: "utf8",
+      env: { ...process.env, NO_COLOR: "1", CI: "1" },
+      timeout: 10_000,
+    });
+    const output = `${result.stdout}${result.stderr}`;
+    assert.equal(result.status, 0, output);
+    assert.doesNotMatch(output, /separate memory file|separate - not optimized/);
+    if (command === "status") assert.match(output, /CLAUDE\.md\s+pointer to AGENTS\.md/);
+    else assert.match(output, /no transcripts associated/);
+  }
+  assert.equal(fs.readFileSync(path.join(repo.root, "AGENTS.md"), "utf8"), AGENTS);
+  assert.equal(fs.readFileSync(path.join(repo.root, "CLAUDE.md"), "utf8"), pointer);
 });
 
 test("CLAUDE.md symlink to AGENTS.md resolves silently and only AGENTS.md is written", () => {
