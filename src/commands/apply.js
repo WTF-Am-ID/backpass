@@ -153,6 +153,12 @@ export async function cmdApply(ctx) {
     rejectReasons,
   });
 
+  if (!ctx.flags["dry-run"] && results.accepted > 0 && !results.failed.length) {
+    proposal.appliedAt = new Date().toISOString();
+    proposal.appliedBy = "apply";
+    config.state.writeProposal(proposal);
+  }
+
   if (surfaceFile) await closeApplySurface(surfaceFile);
 
   if (ctx.flags.json) {
