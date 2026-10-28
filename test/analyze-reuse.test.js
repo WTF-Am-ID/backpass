@@ -223,10 +223,7 @@ test("upgrade revalidates persisted gap quotes before folding selected sessions"
   for (const id of ["session-a", "session-b"]) {
     const file = writeSession(home, id, dir);
     const content = "x".repeat(4800) + buriedQuote + "x".repeat(3200 - buriedQuote.length);
-    fs.appendFileSync(
-      file,
-      `${JSON.stringify({ type: "message", message: { role: "assistant", content } })}\n`,
-    );
+    fs.appendFileSync(file, `${JSON.stringify({ type: "message", message: { role: "assistant", content } })}\n`);
   }
   assert.equal(runAnalyze(dir, home).status, 0);
   const state = new State(dir).ensure();
@@ -306,10 +303,7 @@ test("upgrade revalidates persisted gap quotes before folding selected sessions"
     current.map((r) => r.transcript),
   );
   assert.equal(summary.analyzedSessions, 2);
-  assert.ok(
-    !summary.gaps.some((gap) => gap.proposedInstruction === fabricated),
-    "generated quotes cannot corroborate",
-  );
+  assert.ok(!summary.gaps.some((gap) => gap.proposedInstruction === fabricated), "generated quotes cannot corroborate");
   assert.equal(summary.gaps.find((gap) => gap.proposedInstruction === legitimate)?.sessions, 2);
   assert.equal(summary.gaps.find((gap) => gap.proposedInstruction === rawBacked)?.sessions, 2);
   const cached = runAnalyze(dir, home);
@@ -327,10 +321,7 @@ test("source provenance rejects new and persisted generated quotes after session
   const hidden = "The genuine database contract was overlooked.";
   const files = [];
   const appendTurn = (file, text) =>
-    fs.appendFileSync(
-      file,
-      `${JSON.stringify({ type: "message", message: { role: "assistant", content: text } })}\n`,
-    );
+    fs.appendFileSync(file, `${JSON.stringify({ type: "message", message: { role: "assistant", content: text } })}\n`);
   for (const id of ["session-growth-a", "session-growth-b"]) {
     const file = writeSession(home, id, dir);
     files.push(file);
@@ -393,7 +384,8 @@ test("source provenance rejects new and persisted generated quotes after session
   );
   assert.equal(summary.gaps.find((gap) => gap.proposedInstruction === legitimate)?.sessions, 2);
   assert.equal(
-    summary.gaps.find((gap) => gap.proposedInstruction === "Validate architecture decisions using recorded tradeoffs.")?.sessions,
+    summary.gaps.find((gap) => gap.proposedInstruction === "Validate architecture decisions using recorded tradeoffs.")
+      ?.sessions,
     2,
   );
   const persisted = state.readGapLedger();

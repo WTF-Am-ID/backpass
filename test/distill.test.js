@@ -19,7 +19,10 @@ const META = {
 };
 
 function sourceTexts(...texts) {
-  return distill(texts.map((text) => ({ kind: "message", role: "assistant", text })), META).sources;
+  return distill(
+    texts.map((text) => ({ kind: "message", role: "assistant", text })),
+    META,
+  ).sources;
 }
 
 test("the distilled trace keeps turns verbatim and reduces tool calls to one line each", () => {
@@ -306,11 +309,7 @@ test("marker-shaped session text and repeated real matches remain valid evidence
     ],
     META,
   );
-  const clean = sanitizeEvidence(
-    { positive: [{ instruction: "AG-001", quote: marker }] },
-    null,
-    distilled.sources,
-  );
+  const clean = sanitizeEvidence({ positive: [{ instruction: "AG-001", quote: marker }] }, null, distilled.sources);
   assert.equal(clean.positive.length, 1, "a later match from the session still counts");
   assert.equal(clean.quotesNotInTrace, 0);
 });
@@ -372,7 +371,10 @@ test("source validation rejects generated quotes in short sessions", () => {
     null,
     distilled.sources,
   );
-  assert.deepEqual(clean.gaps.map((gap) => gap.quote), ["Actual source text"]);
+  assert.deepEqual(
+    clean.gaps.map((gap) => gap.quote),
+    ["Actual source text"],
+  );
 });
 
 test("sanitizeEvidence tolerates a malformed model response", () => {
