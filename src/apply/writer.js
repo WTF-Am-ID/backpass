@@ -737,7 +737,8 @@ export function applyDecisions({
     try {
       if (rejected.length) {
         const rejections = state.readRejections();
-        for (const edit of rejected) recordRejection(edit, rejections, new Date().toISOString(), rejectReasons[edit.id]);
+        for (const edit of rejected)
+          recordRejection(edit, rejections, new Date().toISOString(), rejectReasons[edit.id]);
         state.writeRejections(rejections);
         results.rejectionsRecorded = true;
       }
