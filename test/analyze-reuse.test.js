@@ -129,7 +129,23 @@ test("standalone apikey credentials never reach the cached analysis prompt", () 
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "backpass-redact-home-"));
   const dir = initRepo(MEMORY);
   const tokens = [`apikey_${"a".repeat(64)}`, `APIKEY_${"B".repeat(64)}`];
-  writeSession(home, "redacted-session", dir, `Please build the project using (${tokens[0]}).\n${tokens[1]}`);
+  const assignments = [];
+  const secrets = [];
+  for (const name of ["apikey_openrouter_production", "APIKEY_OPENROUTER_PRODUCTION"]) {
+    for (const separator of ["=", ":"]) {
+      for (const quote of ["", '"', "'"]) {
+        const secret = `synthetic-secret-${secrets.length}`;
+        secrets.push(secret);
+        assignments.push(`${name}${separator}${quote}${secret}${quote}`);
+      }
+    }
+  }
+  writeSession(
+    home,
+    "redacted-session",
+    dir,
+    `Please build the project using (${tokens[0]}).\n${tokens[1]}\n${assignments.join("\n")}`,
+  );
 
   const result = runAnalyze(dir, home);
   assert.equal(result.status, 0, result.output);
@@ -141,6 +157,9 @@ test("standalone apikey credentials never reach the cached analysis prompt", () 
   assert.match(prompt, /Please build the project using \(\[redacted:API_KEY\]\)\.\n\[redacted:API_KEY\]/);
   for (const token of tokens)
     assert.ok(!prompt.includes(token), "the cached model prompt must not contain a full credential");
+  for (const secret of secrets)
+    assert.ok(!prompt.includes(secret), "the cached model prompt must not contain an assignment secret");
+  assert.equal(prompt.match(/\[redacted:API_KEY\]=\[redacted\]/g)?.length, assignments.length);
 });
 
 test("the first analysis performs work, an unchanged second reuses it, and --force reanalyzes anyway", () => {
