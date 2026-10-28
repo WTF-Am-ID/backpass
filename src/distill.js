@@ -26,8 +26,7 @@ function oneLine(text, limit) {
   let delta = 0;
   const flat = trimmed.replace(/\s+/g, (match, sourceStart) => {
     const start = sourceStart + delta;
-    if (start < limit)
-      replacements.push({ start, end: start + 1, sourceStart, sourceEnd: sourceStart + match.length });
+    if (start < limit) replacements.push({ start, end: start + 1, sourceStart, sourceEnd: sourceStart + match.length });
     delta += 1 - match.length;
     return " ";
   });
@@ -70,7 +69,8 @@ function renderToolSource(event, descriptor, limit, quoted = false) {
   const escapes = [];
   let delta = 0;
   const escaped = quoted
-    ? redacted.text.replace(/["\\\u0000-\u001f\ud800-\udfff]/gu, (match, sourceStart) => {
+    ? // eslint-disable-next-line no-control-regex -- JSON string escaping requires matching ASCII control characters.
+      redacted.text.replace(/["\\\u0000-\u001f\ud800-\udfff]/gu, (match, sourceStart) => {
         const replacement = JSON.stringify(match).slice(1, -1);
         const start = sourceStart + delta;
         escapes.push({ start, end: start + replacement.length, sourceStart, sourceEnd: sourceStart + match.length });
@@ -139,7 +139,7 @@ export function findQuoteProvenance(quote, sources) {
     if (match) {
       let start = match.index;
       let end = start + match[0].length;
-      // Each pass maps its redacted offsets to the preceding representation. Undo
+      // Each pass maps its transformed offsets to the preceding representation. Undo
       // the passes in reverse order to reach the genuine event's UTF-16 offsets.
       for (const replacements of [...source.redactions].reverse()) {
         start = sourceOffset(start, replacements, false);

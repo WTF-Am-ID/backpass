@@ -487,7 +487,10 @@ test("rendered tool provenance excludes generated truncation and overlapping quo
       null,
       distilled.sources,
     );
-    assert.deepEqual(clean.gaps.map((gap) => gap.quote), [prefix]);
+    assert.deepEqual(
+      clean.gaps.map((gap) => gap.quote),
+      [prefix],
+    );
     assert.equal(clean.quotesNotInTrace, 3);
   }
 });

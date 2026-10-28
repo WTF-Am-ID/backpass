@@ -382,7 +382,10 @@ coining a paraphrase of it.
 
 **Every claim must carry a verbatim quote from a source event.** Quoteless
 items are discarded - the single most important defence against a model confabulating
-influence - and so are quotes without a whitespace-insensitive match in genuine source text.
+influence - and so are quotes without a whitespace-insensitive match in genuine source text
+or its redacted rendering. Tool quotes can retain the trace's flattened whitespace and JSON
+escaping. Measured offsets map these transformations back to the source, excluding generated
+truncation text. Stored quotes stay redacted.
 Each accepted quote records its source event, field, and character span. These spans remain
 valid when session growth hides text from the capped trace. Generated elisions cannot supply
 evidence, and a model's `usedRawTranscript` claim cannot bypass the check. Ledger v1 retains

@@ -133,7 +133,7 @@ export const NEGATIVE_CLASSES = ["harm", "non-compliance", "irrelevant"];
 
 /**
  * Evidence items without a verbatim quote are dropped - the rubric's central rule.
- * Match source event fields rather than rendered trace text, so generated elisions
+ * Match source event fields or their source-mapped renderings, so generated elisions
  * cannot supply evidence and raw-transcript access never disables validation.
  */
 export function sanitizeEvidence(parsed, memoryFile = null, sources = []) {

@@ -473,10 +473,7 @@ test("rendered tool quotes retain fresh and legacy ledger corroboration", async 
     const raw = await readTranscript(record.transcript);
     const { event, field, start, end } = quoteProvenance;
     const source = field.reduce((value, key) => value[key], raw.events[event]);
-    assert.equal(
-      JSON.stringify(redact(source.slice(start, end).replace(/\s+/g, " "))).slice(1, -1),
-      renderedToolQuote,
-    );
+    assert.equal(JSON.stringify(redact(source.slice(start, end).replace(/\s+/g, " "))).slice(1, -1), renderedToolQuote);
   }
   const memoryFile = resolveMemoryFiles(dir, ["AGENTS.md", "CLAUDE.md"]).primary;
   const summary = await foldForRun(
