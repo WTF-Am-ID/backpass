@@ -99,6 +99,18 @@ test("pointer imports allow leading Markdown headings, blanks and HTML comments"
   }
 });
 
+for (const indent of ["", " ", "  ", "   ", "    ", "\t"]) {
+  const isHeading = indent.length < 4 && indent !== "\t";
+  test(`pointer heading indentation ${JSON.stringify(indent)} is ${isHeading ? "accepted" : "content"}`, () => {
+    for (let level = 1; level <= 6; level += 1) {
+      for (const newline of ["\n", "\r\n"]) {
+        const text = `${indent}${"#".repeat(level)} Never deploy without approval${newline}${newline}@AGENTS.md${newline}`;
+        assert.equal(isPointerTo(text, "AGENTS.md"), isHeading, text);
+      }
+    }
+  });
+}
+
 test("headings do not hide prose, multiple imports or other instruction content", () => {
   for (const text of [
     "# my-repo\nReal prose.\n@AGENTS.md\n",
@@ -171,31 +183,43 @@ test("CLAUDE.md as a pointer resolves AGENTS.md silently and only AGENTS.md is w
   assert.equal(fs.readFileSync(path.join(repo.root, "CLAUDE.md"), "utf8"), pointer);
 });
 
-test("CLI recognizes a headed pointer without the separate-memory warning", () => {
-  const pointer = "# my-repo\n\n<!-- canonical memory -->\n@AGENTS.md\n";
-  const repo = repoWith({
-    "AGENTS.md": AGENTS,
-    "CLAUDE.md": pointer,
-    ".backpassrc.json": JSON.stringify({ discovery: { harnesses: [] } }),
-  });
-  execFileSync("git", ["init", "-q"], { cwd: repo.root });
-  const cli = fileURLToPath(new URL("../bin/backpass.js", import.meta.url));
-  for (const command of ["status", "analyze"]) {
-    const result = spawnSync(process.execPath, [cli, command], {
-      cwd: repo.root,
-      encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1", CI: "1" },
-      timeout: 10_000,
+for (const indent of ["", " ", "  ", "   ", "    ", "\t"]) {
+  const isHeading = indent.length < 4 && indent !== "\t";
+  test(`CLI ${isHeading ? "recognizes a pointer" : "warns about separate content"} with indentation ${JSON.stringify(indent)}`, () => {
+    const pointer = `${indent}# my-repo\n\n<!-- canonical memory -->\n@AGENTS.md\n`;
+    const repo = repoWith({
+      "AGENTS.md": AGENTS,
+      "CLAUDE.md": pointer,
+      ".backpassrc.json": JSON.stringify({ discovery: { harnesses: [] } }),
     });
-    const output = `${result.stdout}${result.stderr}`;
-    assert.equal(result.status, 0, output);
-    assert.doesNotMatch(output, /separate memory file|separate - not optimized/);
-    if (command === "status") assert.match(output, /CLAUDE\.md\s+pointer to AGENTS\.md/);
-    else assert.match(output, /no transcripts associated/);
-  }
-  assert.equal(fs.readFileSync(path.join(repo.root, "AGENTS.md"), "utf8"), AGENTS);
-  assert.equal(fs.readFileSync(path.join(repo.root, "CLAUDE.md"), "utf8"), pointer);
-});
+    execFileSync("git", ["init", "-q"], { cwd: repo.root });
+    const cli = fileURLToPath(new URL("../bin/backpass.js", import.meta.url));
+    for (const command of ["status", "analyze"]) {
+      const result = spawnSync(process.execPath, [cli, command], {
+        cwd: repo.root,
+        encoding: "utf8",
+        env: { ...process.env, NO_COLOR: "1", CI: "1" },
+        timeout: 10_000,
+      });
+      const output = `${result.stdout}${result.stderr}`;
+      assert.equal(result.status, 0, output);
+      if (isHeading) {
+        assert.doesNotMatch(output, /separate memory file|separate - not optimized/);
+        if (command === "status") assert.match(output, /CLAUDE\.md\s+pointer to AGENTS\.md/);
+      } else if (command === "status") {
+        assert.match(output, /CLAUDE\.md[^\n]*separate - not optimized/);
+      } else {
+        assert.match(
+          output,
+          /CLAUDE\.md is a separate memory file and will NOT be updated - only AGENTS\.md is optimized/,
+        );
+      }
+      if (command === "analyze") assert.match(output, /no transcripts associated/);
+    }
+    assert.equal(fs.readFileSync(path.join(repo.root, "AGENTS.md"), "utf8"), AGENTS);
+    assert.equal(fs.readFileSync(path.join(repo.root, "CLAUDE.md"), "utf8"), pointer);
+  });
+}
 
 test("CLAUDE.md symlink to AGENTS.md resolves silently and only AGENTS.md is written", () => {
   const repo = repoWith({ "AGENTS.md": AGENTS });

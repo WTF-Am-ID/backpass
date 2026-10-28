@@ -513,11 +513,10 @@ export function pointerImportPath(text, options = {}) {
   const lines = text
     .replace(/<!--[\s\S]*?-->/g, "")
     .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  while (lines.length && /^#{1,6}(?:\s|$)/.test(lines[0])) lines.shift();
+    .filter((l) => l.trim());
+  while (lines.length && /^ {0,3}#{1,6}(?:\s|$)/.test(lines[0])) lines.shift();
   if (lines.length !== 1) return null;
-  const imported = lines[0].replace(/^@\.\//, "@");
+  const imported = lines[0].trim().replace(/^@\.\//, "@");
   if (!imported.startsWith("@")) return null;
 
   const spec = imported.slice(1);
