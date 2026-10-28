@@ -965,10 +965,9 @@ For the user-scope state location and isolation contract, see
 
 ## Limitations
 
-- **Causal attribution is genuinely hard.** A model can confabulate influence. The
-  mitigations are structural - mandatory verbatim quotes checked against the source events they
-  claim to come from, the two-session rule, negative
-  evidence weighted highest, and a human gate - but read the evidence, not just the title.
+- **Causal attribution is genuinely hard.** A model can confabulate influence even with
+  the [evidence checks](#3-calculate-loss---one-cheap-call-per-transcript).
+  Read the evidence, not just the title.
 - **Transcript formats are undocumented** and can change without notice. Each adapter is
   pinned by a golden fixture and fails soft.
 - **Cursor IDE is deferred to v1.1.** Its composer→workspace link is version-dependent;

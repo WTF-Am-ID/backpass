@@ -39,7 +39,8 @@ import { corroborationIdentityOf } from "./transcript.js";
  *    destination are compatible; legacy id keys additionally require unambiguous
  *    `legacyIds`. Incompatible history stays separately keyed, and recording uses a
  *    native or source-qualified key rather than overwriting it. Storage keys do not
- *    grant extra observer votes. Persisted observations only contribute when their
+ *    grant extra observer votes. Persisted observations require verified source-span
+ *    provenance to contribute; unverified history stays on disk. They count only when their
  *    admitted observer belongs to the current selected sample, so sessions outside the
  *    window or cap cannot skew fold.
  *  - A gap is a fact about its session: re-analysis that no longer mentions it is model
@@ -637,7 +638,8 @@ export function mergeGapEntries(ledger, groups) {
               "recurrenceRisk",
               "project",
               "projectRoot",
-            ]) prior[field] = obs[field];
+            ])
+              prior[field] = obs[field];
           }
           const earlier =
             Date.parse(obs.firstObservedAt || obs.observedAt) < Date.parse(prior.firstObservedAt || prior.observedAt);

@@ -132,6 +132,8 @@ export const NEGATIVE_CLASSES = ["harm", "non-compliance", "irrelevant"];
 
 /**
  * Evidence items without a verbatim quote are dropped - the rubric's central rule.
+ * Match source event fields rather than rendered trace text, so generated elisions
+ * cannot supply evidence and raw-transcript access never disables validation.
  */
 export function sanitizeEvidence(parsed, memoryFile = null, sources = []) {
   const clean = {
@@ -161,6 +163,7 @@ export function sanitizeEvidence(parsed, memoryFile = null, sources = []) {
       if (!quoted || typeof item.instruction !== "string") continue;
       const instruction = item.instruction.trim();
       if (validInstructions && !validInstructions.has(instruction)) continue;
+      /** @type {ReturnType<typeof sourceQuote> & { instruction: string, moment: string, effect: string, class?: string }} */
       const entry = {
         instruction,
         moment: String(item.moment ?? "").slice(0, 80),
@@ -178,6 +181,10 @@ export function sanitizeEvidence(parsed, memoryFile = null, sources = []) {
   for (const item of Array.isArray(parsed.gaps) ? parsed.gaps : []) {
     const quoted = sourceQuote(item);
     if (!quoted || typeof item.proposedInstruction !== "string") continue;
+    /** @type {ReturnType<typeof sourceQuote> & {
+     * mistake: string, proposedInstruction: string, recurrenceRisk: string, domain: string,
+     * matchesGap?: string, coveredBySkill?: string
+     * }} */
     const gap = {
       mistake: String(item.mistake ?? "").slice(0, 400),
       proposedInstruction: item.proposedInstruction.trim().slice(0, 400),
