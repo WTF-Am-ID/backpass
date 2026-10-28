@@ -503,13 +503,10 @@ export function reanchor(reference, file, threshold = 0.6) {
 }
 
 /**
- * Pointer detection. The convention for covering both harness families without
- * duplicating content is a canonical AGENTS.md plus a CLAUDE.md that only contains the
- * `@AGENTS.md` import (Claude Code inlines it at load time). Such a file carries no
- * instructions of its own, so optimizing the target is fully correct and the pointer
- * stays valid afterwards.
+ * Pointer detection excludes files with instructions of their own, so optimizing the
+ * imported target covers the importing file without leaving instructions unoptimized.
  *
- * A file is a pointer to `target` when, ignoring blank lines, HTML comments and leading
+ * A file is a pointer when, ignoring blank lines, HTML comments and leading
  * ATX headings, its only content is the import line (`@AGENTS.md` or `@./AGENTS.md`).
  */
 export function pointerImportPath(text, options = {}) {
