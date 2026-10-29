@@ -23,7 +23,10 @@ fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + "\\n");
 const scenario = JSON.parse(fs.readFileSync(${JSON.stringify(scenarioFile)}, "utf8"));
 const reply = prior && scenario.fallback ? scenario.fallback : scenario;
 const json = args[args.indexOf("--format") + 1] === "json";
-fs.writeSync(1, json ? reply.records.map(record => JSON.stringify(record)).join("\\n") + "\\n" : reply.text);
+const records = reply.records.map(record => reply.echoPrompt && record.method === "session/prompt"
+  ? { ...record, params: { ...record.params, prompt: [{ type: "text", text: fs.readFileSync(args[args.indexOf("--file") + 1], "utf8") }] } }
+  : record);
+fs.writeSync(1, json ? records.map(record => JSON.stringify(record)).join("\\n") + "\\n" : reply.text);
 if (reply.stderr) fs.writeSync(2, reply.stderr);
 process.exit(reply.code);
 `,
@@ -228,6 +231,50 @@ for (const [name, records, code] of rejected) {
 }
 
 for (const route of ["exec", "session"]) {
+  for (const code of [0, 5]) {
+    for (const source of ["unreported", "stderr", "result"]) {
+      test(`${route}: echoed RPC prompt cannot supply usage (${source}, exit ${code})`, async () => {
+        const promptFile = path.join(fixtures, "prompt.md");
+        const historical = "[acpx] tokens: input=100 output=20 total=120 done";
+        fs.writeFileSync(promptFile, `Analyze this historical transcript:\n${historical}\n`);
+        const records = [
+          begin(),
+          chunk(JSON.stringify(answer)),
+          source === "result" ? end() : response(2, { stopReason: "end_turn" }),
+        ];
+        prepare(records, code, {
+          echoPrompt: true,
+          stderr: source === "unreported" ? "" : "[acpx] tokens: input=7 output=3 total=10 done\n",
+        });
+        const call = { agent: "codex", promptFile, cwd: fixtures, timeoutSeconds: 5, acceptDeniedOutput: () => true };
+        const result = await (route === "exec" ? execOneShot(call) : sessionPrompt({ ...call, sessionName: "closure" }));
+        const echoed = result.raw
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        assert.equal(echoed[0].params.prompt[0].text, fs.readFileSync(promptFile, "utf8"));
+        assert.deepEqual(
+          result.usage,
+          source === "result"
+            ? { input: 11, output: 29 }
+            : source === "stderr"
+              ? { input: 7, output: 3, total: 10 }
+              : null,
+        );
+        assert.deepEqual(JSON.parse(result.text), answer);
+        assert.equal(result.permissionDenied, code === 5);
+      });
+    }
+  }
+  test(`${route}: quiet output retains stdout token accounting`, async () => {
+    const promptFile = path.join(fixtures, "prompt.md");
+    fs.writeFileSync(promptFile, "Synthetic only.\n");
+    prepare([], 0, { text: `${JSON.stringify(answer)}\n[acpx] tokens: input=7 output=3 total=10 done\n` });
+    const call = { agent: "codex", promptFile, cwd: fixtures, timeoutSeconds: 5 };
+    const result = await (route === "exec" ? execOneShot(call) : sessionPrompt({ ...call, sessionName: "closure" }));
+    assert.deepEqual(result.usage, { input: 7, output: 3, total: 10 });
+    assert.deepEqual(JSON.parse(result.text), answer);
+  });
   test(`${route}: a swallowed zero-exit error retains diagnostics for real fallback`, async () => {
     prepare([failure(null, "Authentication required")], 0, {
       fallback: { records: completed(), code: 0, text: JSON.stringify(answer) },

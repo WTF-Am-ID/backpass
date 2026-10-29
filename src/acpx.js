@@ -578,9 +578,7 @@ export async function execOneShot({
       timeoutSeconds,
     });
 
-    const combined = `${result.stdout}\n${result.stderr}`;
-    const usage =
-      reply.usage ?? parseTokenLine(combined) ?? recoverUsageFromStore({ agent, promptFile, cwd, startedAt });
+    const usage = reply.usage ?? recoverUsageFromStore({ agent, promptFile, cwd, startedAt });
     return {
       ...reply,
       usage,
@@ -778,9 +776,8 @@ export async function openSession({
     }
     const reply = modelReply(result, acceptDeniedOutput, agent, "session prompt");
 
-    const combined = `${result.stdout}\n${result.stderr}`;
     /** @type {Record<string, number> | null} */
-    let usage = reply.usage ?? parseTokenLine(combined);
+    let usage = reply.usage;
     if (!usage) {
       // The harness store holds the whole session's usage; this turn is the increase.
       const cumulative = recoverUsageFromStore({ agent, promptFile: firstPromptFile, cwd, startedAt });
@@ -887,7 +884,7 @@ function modelReply(result, acceptDeniedOutput, agent, label) {
   }
   return {
     text: output?.text ?? stripAcpxNoise(result.stdout),
-    usage: output?.usage || null,
+    usage: output?.usage ?? parseTokenLine(acceptDeniedOutput ? result.stderr : `${result.stdout}\n${result.stderr}`),
     permissionDenied: Boolean(permissionDenied),
     deniedRequests: output?.deniedRequests ?? null,
     stderr,
