@@ -774,6 +774,77 @@ test("dry-run and rejected-only apply leave the proposal unstamped and retryable
   }
 });
 
+test("an older review preserves a replacement or cleared proposal and rolls back its edits", () => {
+  for (const replaced of [true, false]) {
+    const dir = initRepo();
+    proposeExtractions(dir);
+    const state = new State(dir).ensure();
+    const proposal = state.readProposal();
+    if (replaced) state.writeProposal({ ...proposal, notes: ["A fresh proposal saved during review"] });
+    else state.clearProposal();
+    const fresh = replaced ? fs.readFileSync(state.proposalPath) : null;
+
+    const results = applyDecisions({
+      proposal,
+      decisions: Object.fromEntries(proposal.edits.map((edit) => [edit.id, "accepted"])),
+      repo: { root: dir, name: path.basename(dir) },
+      state,
+      config: { budgetTokens: 5000, skillsDir: ".agents/skills" },
+      appliedBy: "apply",
+    });
+
+    assert.deepEqual(fs.existsSync(state.proposalPath) ? fs.readFileSync(state.proposalPath) : null, fresh);
+    assert.match(results.failed[0]?.error || "", /proposal changed/);
+    assert.deepEqual(results.written, []);
+    assert.deepEqual(results.skills, []);
+    assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), MEMORY_TEXT);
+    assert.equal(fs.existsSync(path.join(dir, ".agents")), false);
+    assert.equal(fs.existsSync(path.join(dir, ".claude")), false);
+    if (!replaced) state.writeProposal(proposal);
+    const retry = runDecided(dir, proposal.edits.map((edit) => `${edit.id}=accepted`).join(" "));
+    assert.equal(retry.status, 0, retry.output);
+    assert.equal(state.readProposal().appliedBy, "apply");
+  }
+});
+
+test("proposal saves and clears cannot interleave with the apply stamp", (t) => {
+  const dir = initRepo();
+  proposeExtractions(dir);
+  const state = new State(dir).ensure();
+  const proposal = state.readProposal();
+  const concurrent = new State(dir);
+  const before = fs.readFileSync(state.proposalPath);
+  const writeJsonFile = state.writeJsonFile.bind(state);
+  let attempted = false;
+  t.mock.method(state, "writeJsonFile", (file, value) => {
+    attempted = true;
+    assert.throws(() => concurrent.writeProposal({ ...proposal, notes: ["Concurrent proposal"] }), {
+      code: "EEXIST",
+    });
+    assert.throws(() => concurrent.clearProposal(), { code: "EEXIST" });
+    assert.deepEqual(fs.readFileSync(state.proposalPath), before);
+    writeJsonFile(file, value);
+  });
+
+  const results = applyDecisions({
+    proposal,
+    decisions: Object.fromEntries(proposal.edits.map((edit) => [edit.id, "accepted"])),
+    repo: { root: dir, name: path.basename(dir) },
+    state,
+    config: { budgetTokens: 5000, skillsDir: ".agents/skills" },
+    appliedBy: "apply",
+  });
+
+  assert.equal(attempted, true);
+  assert.deepEqual(results.failed, []);
+  assert.equal(concurrent.readProposal().appliedBy, "apply");
+  const fresh = { ...proposal, notes: ["Saved after apply"] };
+  concurrent.writeProposal(fresh);
+  assert.deepEqual(concurrent.readProposal(), fresh);
+  concurrent.clearProposal();
+  assert.equal(concurrent.readProposal(), null);
+});
+
 test("a write failure leaves the proposal unstamped and retryable", () => {
   const dir = initRepo();
   const proposal = proposeExtractions(dir);

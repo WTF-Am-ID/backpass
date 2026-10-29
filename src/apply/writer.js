@@ -743,7 +743,7 @@ export function applyDecisions({
         results.rejectionsRecorded = true;
       }
       if (accepted.length && appliedBy) {
-        state.writeProposal({ ...proposal, appliedAt: new Date().toISOString(), appliedBy });
+        state.writeProposal({ ...proposal, appliedAt: new Date().toISOString(), appliedBy }, proposal);
       }
     } catch (err) {
       results.failed.push({ error: err.message });

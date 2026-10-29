@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { STATE_DIRNAME } from "./config.js";
 import { UserError, warn } from "./logger.js";
@@ -184,12 +185,29 @@ export class State {
     return this.readJsonFile(this.proposalPath, null);
   }
 
-  writeProposal(proposal) {
-    this.writeJsonFile(this.proposalPath, proposal);
+  writeProposal(proposal, reviewed = undefined) {
+    this.withProposalLock(() => {
+      if (reviewed !== undefined && !isDeepStrictEqual(this.readProposal(), reviewed)) {
+        throw new UserError("the saved proposal changed during review; review the current proposal again");
+      }
+      this.writeJsonFile(this.proposalPath, proposal);
+    });
   }
 
   clearProposal() {
-    fs.rmSync(this.proposalPath, { force: true });
+    this.withProposalLock(() => fs.rmSync(this.proposalPath, { force: true }));
+  }
+
+  withProposalLock(action) {
+    fs.mkdirSync(this.root, { recursive: true });
+    const lockPath = `${this.proposalPath}.lock`;
+    const fd = fs.openSync(lockPath, "wx");
+    try {
+      return action();
+    } finally {
+      fs.closeSync(fd);
+      fs.unlinkSync(lockPath);
+    }
   }
 
   readRejections() {
