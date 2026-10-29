@@ -186,28 +186,14 @@ export class State {
   }
 
   writeProposal(proposal, reviewed = undefined) {
-    this.withProposalLock(() => {
-      if (reviewed !== undefined && !isDeepStrictEqual(this.readProposal(), reviewed)) {
-        throw new UserError("the saved proposal changed during review; review the current proposal again");
-      }
-      this.writeJsonFile(this.proposalPath, proposal);
-    });
+    if (reviewed !== undefined && !isDeepStrictEqual(this.readProposal(), reviewed)) {
+      throw new UserError("the saved proposal changed during review; review the current proposal again");
+    }
+    this.writeJsonFile(this.proposalPath, proposal);
   }
 
   clearProposal() {
-    this.withProposalLock(() => fs.rmSync(this.proposalPath, { force: true }));
-  }
-
-  withProposalLock(action) {
-    fs.mkdirSync(this.root, { recursive: true });
-    const lockPath = `${this.proposalPath}.lock`;
-    const fd = fs.openSync(lockPath, "wx");
-    try {
-      return action();
-    } finally {
-      fs.closeSync(fd);
-      fs.unlinkSync(lockPath);
-    }
+    fs.rmSync(this.proposalPath, { force: true });
   }
 
   readRejections() {

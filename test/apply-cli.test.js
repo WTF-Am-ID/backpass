@@ -807,42 +807,37 @@ test("an older review preserves a replacement or cleared proposal and rolls back
   }
 });
 
-test("proposal saves and clears cannot interleave with the apply stamp", (t) => {
+test("an interrupted proposal save does not block later saves, apply, or clearing", () => {
   const dir = initRepo();
   proposeExtractions(dir);
   const state = new State(dir).ensure();
   const proposal = state.readProposal();
-  const concurrent = new State(dir);
   const before = fs.readFileSync(state.proposalPath);
-  const writeJsonFile = state.writeJsonFile.bind(state);
-  let attempted = false;
-  t.mock.method(state, "writeJsonFile", (file, value) => {
-    attempted = true;
-    assert.throws(() => concurrent.writeProposal({ ...proposal, notes: ["Concurrent proposal"] }), {
-      code: "EEXIST",
-    });
-    assert.throws(() => concurrent.clearProposal(), { code: "EEXIST" });
-    assert.deepEqual(fs.readFileSync(state.proposalPath), before);
-    writeJsonFile(file, value);
-  });
+  const interrupted = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import { State } from "./src/state.js";
+       const state = new State(process.argv[1]);
+       state.writeJsonFile = () => process.exit(1);
+       state.writeProposal({});`,
+      dir,
+    ],
+    { cwd: ROOT, encoding: "utf8" },
+  );
 
-  const results = applyDecisions({
-    proposal,
-    decisions: Object.fromEntries(proposal.edits.map((edit) => [edit.id, "accepted"])),
-    repo: { root: dir, name: path.basename(dir) },
-    state,
-    config: { budgetTokens: 5000, skillsDir: ".agents/skills" },
-    appliedBy: "apply",
-  });
-
-  assert.equal(attempted, true);
-  assert.deepEqual(results.failed, []);
-  assert.equal(concurrent.readProposal().appliedBy, "apply");
-  const fresh = { ...proposal, notes: ["Saved after apply"] };
-  concurrent.writeProposal(fresh);
-  assert.deepEqual(concurrent.readProposal(), fresh);
-  concurrent.clearProposal();
-  assert.equal(concurrent.readProposal(), null);
+  assert.equal(interrupted.status, 1, interrupted.stderr);
+  assert.equal(interrupted.stderr, "");
+  assert.deepEqual(fs.readFileSync(state.proposalPath), before);
+  const fresh = { ...proposal, notes: ["Saved after interruption"] };
+  state.writeProposal(fresh);
+  assert.deepEqual(state.readProposal(), fresh);
+  const applied = runDecided(dir, proposal.edits.map((edit) => `${edit.id}=accepted`).join(" "));
+  assert.equal(applied.status, 0, applied.output);
+  assert.equal(state.readProposal().appliedBy, "apply");
+  state.clearProposal();
+  assert.equal(state.readProposal(), null);
 });
 
 test("a write failure leaves the proposal unstamped and retryable", () => {
