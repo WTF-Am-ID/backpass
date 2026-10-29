@@ -247,7 +247,9 @@ for (const route of ["exec", "session"]) {
           stderr: source === "unreported" ? "" : "[acpx] tokens: input=7 output=3 total=10 done\n",
         });
         const call = { agent: "codex", promptFile, cwd: fixtures, timeoutSeconds: 5, acceptDeniedOutput: () => true };
-        const result = await (route === "exec" ? execOneShot(call) : sessionPrompt({ ...call, sessionName: "closure" }));
+        const result = await (route === "exec"
+          ? execOneShot(call)
+          : sessionPrompt({ ...call, sessionName: "closure" }));
         const echoed = result.raw
           .split("\n")
           .filter(Boolean)
